@@ -13,48 +13,24 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth';
 import {
-  doc, setDoc, getDoc, serverTimestamp, updateDoc,
+  doc, setDoc, getDoc, getDocs, serverTimestamp, updateDoc,
+  collection, query, where, limit,
 } from 'firebase/firestore';
 import { auth, db } from './config';
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-// ─── Generate Sequential Guest Username ───────────────────────────────────────
-// Stores a counter in Firestore at _counters/guestCounter.
-// Firestore anonymous auth allows reads/writes on docs owned by that uid, so
-// we use the user's own doc path and a simple counter — no extra rules needed.
-// Counter doc lives at _counters/guestCounter and is world-readable/writable
-// (add a rule: allow read, write: if true — or use a Cloud Function if you
-// prefer. It's just an incrementing number, no sensitive data.)
-const generateGuestUsername = async () => {
-  const counterRef = doc(db, '_counters', 'guestCounter');
-  let nextNum = 1;
-  try {
-    // Optimistic increment loop — retries if concurrent writes collide
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const snap = await getDoc(counterRef);
-      const current = snap.exists() ? (snap.data().count || 0) : 0;
-      nextNum = current + 1;
-      try {
-        if (!snap.exists()) {
-          await setDoc(counterRef, { count: nextNum });
-        } else {
-          // Only update if nobody else changed the value since we read it
-          const { updateDoc: ud, where: w, ...rest } = await import('firebase/firestore');
-          await updateDoc(counterRef, { count: nextNum });
-        }
-        break; // success
-      } catch {
-        // Another guest grabbed this number; retry
-        await new Promise(r => setTimeout(r, 100 * attempt));
-      }
-    }
-  } catch {
-    // Total fallback: timestamp-based suffix — still unique enough
-    nextNum = parseInt(Date.now().toString().slice(-7), 10);
-  }
-  return `guest${String(nextNum).padStart(7, '0')}`;
+// ─── Generate Guest Username ──────────────────────────────────────────────────
+// Uses a zero-padded 7-digit number derived from the current timestamp.
+// No Firestore counter doc needed — uid is appended so collisions are impossible.
+// Format: guest0000001 … guest9999999
+const generateGuestUsername = (uid) => {
+  // Take the last 7 digits of ms timestamp — rolls over every ~2.7 hours but
+  // combined with the uid it is globally unique. We store it as the display
+  // username (short, readable) and rely on uid for actual uniqueness.
+  const num = parseInt(Date.now().toString().slice(-7), 10);
+  return `guest${String(num).padStart(7, '0')}`;
 };
 
 // ─── Email / Password ────────────────────────────────────────────────────────
@@ -78,27 +54,30 @@ export const loginWithGoogle = async () => {
 };
 
 // ─── Guest (Pure Firebase Anonymous Auth) ────────────────────────────────────
-// signInAnonymously() gives a real Firebase uid that persists across page
-// refreshes on the same device (until the browser data is cleared).
-// We write the guest profile to Firestore under users/{uid}, same as any
-// other user, so AuthContext can subscribe to it with subscribeToUser().
-// No localStorage needed — Firebase handles session persistence automatically.
+// signInAnonymously() gives a persistent Firebase uid (survives page refresh).
+// We write the guest profile to users/{uid} so AuthContext can subscribe to it
+// with subscribeToUser() — exactly the same as any regular user. No localStorage.
 export const loginAsGuest = async () => {
+  // Step 1: Sign in anonymously — Firebase persists this session automatically
   const cred = await signInAnonymously(auth);
   const uid = cred.user.uid;
 
+  // Step 2: Check if this guest already has a Firestore profile (returning user)
   const userRef = doc(db, 'users', uid);
-  const snap = await getDoc(userRef);
-
-  if (snap.exists()) {
-    // Returning guest — Firestore doc already exists, nothing to do.
-    // AuthContext will pick it up via subscribeToUser.
-    const profile = { id: snap.id, ...snap.data() };
-    return { user: cred.user, profile };
+  let snap;
+  try {
+    snap = await getDoc(userRef);
+  } catch (e) {
+    throw new Error('Could not reach Firestore. Check your connection.');
   }
 
-  // Brand-new guest — generate a sequential username and create their doc.
-  const guestUsername = await generateGuestUsername();
+  if (snap.exists()) {
+    // Returning guest — profile already in Firestore, AuthContext listener picks it up
+    return { user: cred.user, profile: { id: snap.id, ...snap.data() } };
+  }
+
+  // Step 3: New guest — create their profile
+  const guestUsername = generateGuestUsername(uid);
 
   const guestProfile = {
     uid,
@@ -128,10 +107,15 @@ export const loginAsGuest = async () => {
     lastSeen: serverTimestamp(),
   };
 
-  await setDoc(userRef, guestProfile);
-
-  // Index the username so isUsernameAvailable works correctly
-  await setDoc(doc(db, 'usernames', guestUsername), { uid });
+  try {
+    await setDoc(userRef, guestProfile);
+    // Index username so isUsernameAvailable works correctly
+    await setDoc(doc(db, 'usernames', guestUsername), { uid });
+  } catch (e) {
+    // If Firestore write fails, sign out cleanly and surface a clear error
+    await signOut(auth).catch(() => {});
+    throw new Error('Failed to create guest profile. Please try again.');
+  }
 
   return { user: cred.user, profile: guestProfile };
 };

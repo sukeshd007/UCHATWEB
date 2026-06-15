@@ -60,26 +60,26 @@ export default function OnboardingPage() {
     reader.readAsDataURL(file);
   };
 
-  const handleFinish = async () => {
+  const handleFinish = async (skipPhoto = false) => {
     setLoading(true);
     try {
-      let profilePhotoUrl = photo;
-      
-      if (photoFile) {
+      // Only upload if the user actually picked a new file — never store a data URL
+      let profilePhotoUrl = null;
+      if (!skipPhoto && photoFile) {
         const result = await uploadProfileImage(photoFile, firebaseUser.uid, setUploadProgress);
         profilePhotoUrl = result.url;
       }
-      
+
       await completeProfileSetup(firebaseUser.uid, {
         username,
         displayName,
-        profilePhoto: profilePhotoUrl
+        profilePhoto: profilePhotoUrl,
       });
-      
+
       toast.success('Welcome to UChat! 🎉');
       navigate('/');
     } catch (e) {
-      toast.error(e.message || 'Setup failed');
+      toast.error(e.message || 'Setup failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -318,7 +318,7 @@ export default function OnboardingPage() {
             <button
               onClick={() => {
                 if (step < STEPS.length - 1) setStep(s => s + 1);
-                else handleFinish();
+                else handleFinish(false);
               }}
               disabled={!canProceed[step] || loading}
               style={{
@@ -345,7 +345,7 @@ export default function OnboardingPage() {
 
           {step === STEPS.length - 1 && (
             <button
-              onClick={handleFinish}
+              onClick={() => handleFinish(true)}
               disabled={loading}
               style={{
                 width: '100%', marginTop: 10, padding: '10px',

@@ -26,5 +26,5 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
 });
 
-// No Firebase Storage export — we use Cloudflare R2 now
+export { app };
 export default app;
