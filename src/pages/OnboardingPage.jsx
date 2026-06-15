@@ -86,7 +86,7 @@ export default function OnboardingPage() {
   };
 
   const canProceed = [
-    username.length >= 3 && usernameAvailable === true,
+    username.length >= 3 && usernameAvailable === true && checking === false,
     displayName.trim().length >= 2,
     true // photo is optional
   ];

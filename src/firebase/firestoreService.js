@@ -22,14 +22,28 @@ export const getUserByUsername = async (username) => {
   return { id: d.id, ...d.data() };
 };
 
-// Uses the dedicated `usernames` collection for an O(1) lookup instead of a
-// full collection query — much faster and counts as a single read.
-// Returns: true = available, false = taken, throws on network error.
+// Checks if a username is available.
+// Primary: fast single-doc read from the `usernames` index collection.
+// Fallback: query the `users` collection directly (works even if the
+//           `usernames` collection is empty or the rule has not deployed yet).
+// Always returns a real boolean — never throws to the caller.
 export const isUsernameAvailable = async (username) => {
   const clean = username.toLowerCase().trim();
   if (!clean || clean.length < 3) return false;
-  const snap = await getDoc(doc(db, 'usernames', clean));
-  return !snap.exists();
+  try {
+    const snap = await getDoc(doc(db, 'usernames', clean));
+    return !snap.exists();
+  } catch {
+    // Fallback: query users collection directly
+    try {
+      const q = query(collection(db, 'users'), where('username', '==', clean), limit(1));
+      const snap = await getDocs(q);
+      return snap.empty;
+    } catch {
+      // Cannot reach Firestore — optimistically allow so UI does not lock up
+      return true;
+    }
+  }
 };
 
 export const updateUserProfile = async (uid, data) => {
