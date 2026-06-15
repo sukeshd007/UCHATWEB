@@ -1,0 +1,112 @@
+// storage.rules
+// Firebase Storage Security Rules for UChat
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ─── Helper functions ────────────────────────────────────────────────────
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isNotBanned() {
+      return isAuth(); // Ban checks enforced at Firestore level
+    }
+
+    function isValidImageType() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    function isValidVideoType() {
+      return request.resource.contentType.matches('video/.*');
+    }
+
+    function isValidAudioType() {
+      return request.resource.contentType.matches('audio/.*');
+    }
+
+    function maxSize(mb) {
+      return request.resource.size <= mb * 1024 * 1024;
+    }
+
+    // ─── Profile images ──────────────────────────────────────────────────────
+
+    match /profile-images/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidImageType()
+        && maxSize(10);
+    }
+
+    // ─── Cover images ────────────────────────────────────────────────────────
+
+    match /cover-images/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidImageType()
+        && maxSize(10);
+    }
+
+    // ─── Post images ─────────────────────────────────────────────────────────
+
+    match /post-images/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidImageType()
+        && maxSize(10);
+    }
+
+    // ─── Post videos ─────────────────────────────────────────────────────────
+
+    match /post-videos/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidVideoType()
+        && maxSize(100);
+    }
+
+    // ─── Reel videos ─────────────────────────────────────────────────────────
+
+    match /reel-videos/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidVideoType()
+        && maxSize(100);
+    }
+
+    // ─── Chat images ─────────────────────────────────────────────────────────
+
+    match /chat-images/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidImageType()
+        && maxSize(10);
+    }
+
+    // ─── Chat videos ─────────────────────────────────────────────────────────
+
+    match /chat-videos/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidVideoType()
+        && maxSize(50);
+    }
+
+    // ─── Voice notes ─────────────────────────────────────────────────────────
+
+    match /voice-notes/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && (isValidAudioType() || request.resource.contentType == 'audio/webm')
+        && maxSize(25);
+    }
+
+    // ─── Deny everything else ────────────────────────────────────────────────
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

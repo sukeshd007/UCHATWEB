@@ -1,0 +1,88 @@
+// src/contexts/AuthContext.jsx
+import { createContext, useContext, useEffect, useState } from 'react';
+import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus } from '../firebase/authService';
+import { subscribeToUser } from '../firebase/firestoreService';
+
+const AuthContext = createContext(null);
+
+export const OWNER_EMAILS = ['support.uchat@gmail.com', 'help.uchat@outlook.com'];
+
+export const AuthProvider = ({ children }) => {
+  const [firebaseUser, setFirebaseUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [unsubscribeProfile, setUnsubscribeProfile] = useState(null);
+
+  useEffect(() => {
+    const unsubAuth = subscribeToAuthState(async (user) => {
+      setFirebaseUser(user);
+      if (unsubscribeProfile) unsubscribeProfile();
+
+      if (user && !user.isAnonymous) {
+        await ensureUserDocument(user);
+        const unsub = subscribeToUser(user.uid, (profile) => {
+          setUserProfile(profile);
+          setLoading(false);
+        });
+        setUnsubscribeProfile(() => unsub);
+        await updateOnlineStatus(user.uid, true);
+      } else if (user && user.isAnonymous) {
+        // Guest user - they have a guestProfile in localStorage
+        const guestProfile = JSON.parse(localStorage.getItem('uchat_guest_profile') || 'null');
+        setUserProfile(guestProfile);
+        setLoading(false);
+      } else {
+        setUserProfile(null);
+        setLoading(false);
+      }
+    });
+
+    const handleVisibility = () => {
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        updateOnlineStatus(firebaseUser.uid, !document.hidden);
+      }
+    };
+    const handleUnload = () => {
+      if (firebaseUser?.uid && !firebaseUser.isAnonymous) {
+        updateOnlineStatus(firebaseUser.uid, false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('beforeunload', handleUnload);
+    return () => {
+      unsubAuth();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('beforeunload', handleUnload);
+    };
+  }, []);
+
+  const isOwner = OWNER_EMAILS.includes(userProfile?.email);
+  const isAdmin = userProfile?.role === 'admin' || isOwner;
+  const isProfileComplete = userProfile?.profileSetupComplete === true;
+  // Check if ban has expired
+  const banUntil = userProfile?.banUntil;
+  const banExpired = banUntil && banUntil !== 'permanent' && new Date(banUntil) < new Date();
+  const isBanned = userProfile?.banned === true && !banExpired;
+  const isGuest = firebaseUser?.isAnonymous || false;
+
+  const value = {
+    firebaseUser,
+    userProfile,
+    loading,
+    isOwner,
+    isAdmin,
+    isProfileComplete,
+    isBanned,
+    uid: firebaseUser?.uid || null,
+    isGuest,
+    isAuthenticated: !!firebaseUser,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+};

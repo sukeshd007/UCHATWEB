@@ -1,0 +1,32 @@
+{
+  "name": "uchat",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .js,.jsx"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "firebase": "^10.12.1",
+    "framer-motion": "^11.2.11",
+    "lucide-react": "^0.383.0",
+    "react-intersection-observer": "^9.10.3",
+    "react-hot-toast": "^2.4.1",
+    "date-fns": "^3.6.0",
+    "uuid": "^10.0.0",
+    "emoji-picker-react": "^4.9.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.2",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "vite": "^5.2.13"
+  }
+}

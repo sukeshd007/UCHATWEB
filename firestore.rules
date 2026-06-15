@@ -1,0 +1,233 @@
+// firestore.rules
+// Production-ready Firestore Security Rules for UChat
+// Deploy with: firebase deploy --only firestore:rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper Functions ───────────────────────────────────────────────────
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return request.auth.uid == uid;
+    }
+
+    function isOwnerAccount() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'support.uchat@gmail.com';
+    }
+
+    function isAdmin() {
+      return isAuth() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        isOwnerAccount()
+      );
+    }
+
+    function isNotBanned() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.banned != true;
+    }
+
+    function isProfileComplete() {
+      return isAuth() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.profileSetupComplete == true;
+    }
+
+    function isValidUsername(username) {
+      return username.matches('^[a-z0-9_.]{3,30}$');
+    }
+
+    // ─── Users ──────────────────────────────────────────────────────────────
+
+    match /users/{uid} {
+      allow read: if isAuth();
+
+      // Allow user to create their own document
+      allow create: if isAuth() && request.auth.uid == uid
+        && request.resource.data.role == 'user'
+        && request.resource.data.verified == false
+        && request.resource.data.banned == false;
+
+      // Users can update their own profile but NOT sensitive fields
+      allow update: if isAuth() && (
+        // Own profile (limited fields)
+        (request.auth.uid == uid && isNotBanned() &&
+          !request.resource.data.diff(resource.data).affectedKeys()
+            .hasAny(['role', 'verified', 'banned', 'blacklisted', 'uid', 'email'])
+        ) ||
+        // Admins can update most fields
+        (isAdmin() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['email']))  ||
+        // System updates (follow counts, etc.)
+        (isAuth() && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['followersCount', 'followingCount', 'postsCount', 'reelsCount', 'onlineStatus', 'lastSeen']))
+      );
+
+      allow delete: if isOwnerAccount();
+    }
+
+    // ─── Posts ──────────────────────────────────────────────────────────────
+
+    match /posts/{postId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned() && isProfileComplete()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if isAuth() && (
+        resource.data.authorId == request.auth.uid ||
+        // Like/comment count updates
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'sharesCount', 'savedCount'])
+      );
+      allow delete: if isAuth() && (
+        resource.data.authorId == request.auth.uid || isAdmin()
+      );
+    }
+
+    // ─── Reels ──────────────────────────────────────────────────────────────
+
+    match /reels/{reelId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned() && isProfileComplete()
+        && request.resource.data.authorId == request.auth.uid;
+      allow update: if isAuth() && (
+        resource.data.authorId == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'viewsCount'])
+      );
+      allow delete: if isAuth() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // ─── Comments ───────────────────────────────────────────────────────────
+
+    match /comments/{commentId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned() && isProfileComplete()
+        && request.resource.data.authorId == request.auth.uid;
+      allow delete: if isAuth() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // ─── Likes ──────────────────────────────────────────────────────────────
+
+    match /likes/{likeId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Saves ──────────────────────────────────────────────────────────────
+
+    match /saves/{saveId} {
+      allow read: if isAuth() && resource.data.userId == request.auth.uid;
+      allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Followers / Following ───────────────────────────────────────────────
+
+    match /followers/{docId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.followerId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.followerId == request.auth.uid;
+    }
+
+    match /following/{docId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Chats ──────────────────────────────────────────────────────────────
+
+    match /chats/{chatId} {
+      allow read: if isAuth() && request.auth.uid in resource.data.participants;
+      allow create: if isAuth() && isNotBanned()
+        && request.auth.uid in request.resource.data.participants;
+      allow update: if isAuth() && request.auth.uid in resource.data.participants;
+      allow delete: if false; // Chats cannot be deleted (only messages)
+    }
+
+    // ─── Messages ───────────────────────────────────────────────────────────
+
+    match /messages/{messageId} {
+      allow read: if isAuth() &&
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(resource.data.chatId)).data.participants;
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.senderId == request.auth.uid
+        && request.auth.uid in get(/databases/$(database)/documents/chats/$(request.resource.data.chatId)).data.participants;
+      allow update: if isAuth() && (
+        resource.data.senderId == request.auth.uid ||
+        // Reactions from chat participants
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy'])
+      );
+      allow delete: if false; // Soft delete only
+    }
+
+    // ─── Notifications ───────────────────────────────────────────────────────
+
+    match /notifications/{notifId} {
+      allow read: if isAuth() && resource.data.recipientId == request.auth.uid;
+      allow create: if isAuth() && isNotBanned();
+      allow update: if isAuth() && resource.data.recipientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuth() && resource.data.recipientId == request.auth.uid;
+    }
+
+    // ─── Notes ───────────────────────────────────────────────────────────────
+
+    match /notes/{uid} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid && isNotBanned();
+    }
+
+    // ─── Reports ─────────────────────────────────────────────────────────────
+
+    match /reports/{reportId} {
+      allow read: if isAdmin();
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.reporterUid == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if isOwnerAccount();
+    }
+
+    // ─── Calls ───────────────────────────────────────────────────────────────
+
+    match /calls/{callId} {
+      allow read: if isAuth() && (
+        resource.data.callerId == request.auth.uid ||
+        resource.data.calleeId == request.auth.uid
+      );
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.callerId == request.auth.uid;
+      allow update: if isAuth() && (
+        resource.data.callerId == request.auth.uid ||
+        resource.data.calleeId == request.auth.uid
+      );
+
+      // ICE candidates subcollections
+      match /callerCandidates/{candId} {
+        allow read, write: if isAuth();
+      }
+      match /calleeCandidates/{candId} {
+        allow read, write: if isAuth();
+      }
+    }
+
+    // ─── Reel Views ──────────────────────────────────────────────────────────
+
+    match /reelViews/{viewId} {
+      allow read: if isAuth();
+      allow create, update: if isAuth() && request.resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Deny all else ────────────────────────────────────────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
