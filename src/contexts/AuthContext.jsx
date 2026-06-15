@@ -16,21 +16,24 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const unsubAuth = subscribeToAuthState(async (user) => {
       setFirebaseUser(user);
+
+      // Tear down previous Firestore listener
       if (unsubscribeProfile) unsubscribeProfile();
 
-      if (user && !user.isAnonymous) {
-        await ensureUserDocument(user);
+      if (user) {
+        // Both regular AND anonymous (guest) users have a Firestore doc under
+        // users/{uid}, so we can use the exact same subscribeToUser path for both.
+        // No localStorage, no polling — Firestore real-time listener handles it.
+        if (!user.isAnonymous) {
+          await ensureUserDocument(user);
+          await updateOnlineStatus(user.uid, true);
+        }
+
         const unsub = subscribeToUser(user.uid, (profile) => {
           setUserProfile(profile);
           setLoading(false);
         });
         setUnsubscribeProfile(() => unsub);
-        await updateOnlineStatus(user.uid, true);
-      } else if (user && user.isAnonymous) {
-        // Guest user - they have a guestProfile in localStorage
-        const guestProfile = JSON.parse(localStorage.getItem('uchat_guest_profile') || 'null');
-        setUserProfile(guestProfile);
-        setLoading(false);
       } else {
         setUserProfile(null);
         setLoading(false);
@@ -59,7 +62,6 @@ export const AuthProvider = ({ children }) => {
   const isOwner = OWNER_EMAILS.includes(userProfile?.email);
   const isAdmin = userProfile?.role === 'admin' || isOwner;
   const isProfileComplete = userProfile?.profileSetupComplete === true;
-  // Check if ban has expired
   const banUntil = userProfile?.banUntil;
   const banExpired = banUntil && banUntil !== 'permanent' && new Date(banUntil) < new Date();
   const isBanned = userProfile?.banned === true && !banExpired;

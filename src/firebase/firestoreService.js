@@ -22,9 +22,14 @@ export const getUserByUsername = async (username) => {
   return { id: d.id, ...d.data() };
 };
 
+// Uses the dedicated `usernames` collection for an O(1) lookup instead of a
+// full collection query — much faster and counts as a single read.
+// Returns: true = available, false = taken, throws on network error.
 export const isUsernameAvailable = async (username) => {
-  const u = await getUserByUsername(username.toLowerCase());
-  return u === null;
+  const clean = username.toLowerCase().trim();
+  if (!clean || clean.length < 3) return false;
+  const snap = await getDoc(doc(db, 'usernames', clean));
+  return !snap.exists();
 };
 
 export const updateUserProfile = async (uid, data) => {

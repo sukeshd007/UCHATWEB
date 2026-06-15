@@ -29,15 +29,24 @@ export default function OnboardingPage() {
     const clean = val.toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 30);
     setUsername(clean);
     setUsernameAvailable(null);
-    
+
     clearTimeout(debounceTimer.current);
     if (clean.length >= 3) {
       setChecking(true);
       debounceTimer.current = setTimeout(async () => {
-        const avail = await isUsernameAvailable(clean);
-        setUsernameAvailable(avail);
-        setChecking(false);
+        try {
+          const avail = await isUsernameAvailable(clean);
+          setUsernameAvailable(avail);
+        } catch (err) {
+          // Network / Firestore error — show neutral state, don't lock UI
+          setUsernameAvailable(null);
+          toast.error('Could not check username. Check your connection.');
+        } finally {
+          setChecking(false);
+        }
       }, 500);
+    } else {
+      setChecking(false);
     }
   };
 
@@ -186,7 +195,7 @@ export default function OnboardingPage() {
                   </p>
                 )}
                 <p style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 10 }}>
-                  Use letters, numbers, underscores, or periods. Min 3 characters.
+                  Use letters, numbers, underscores, or periods. Min 3 characters. Checked live in &lt;1 second.
                 </p>
                 <div style={{
                   marginTop: 12, padding: '10px 14px', borderRadius: 12,
