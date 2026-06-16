@@ -349,6 +349,25 @@ export const createReel = async (uid, reelData) => {
     likesCount: 0,
     commentsCount: 0,
     viewsCount: 0,
+    sharesCount: 0,
+    createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'users', uid), { reelsCount: increment(1) });
+  return ref.id;
+};
+
+// Owner-only: create a reel entry that references a local file (blob URL).
+// The video only plays on the owner's device in the current session.
+// This saves cloud storage. Caption/title editing works the same way.
+export const createLocalReel = async (uid, reelData) => {
+  const ref = await addDoc(collection(db, 'reels'), {
+    authorId: uid,
+    ...reelData,
+    isLocalFile: true,
+    likesCount: 0,
+    commentsCount: 0,
+    viewsCount: 0,
+    sharesCount: 0,
     createdAt: serverTimestamp()
   });
   await updateDoc(doc(db, 'users', uid), { reelsCount: increment(1) });
@@ -371,10 +390,15 @@ export const getReels = async (lastDoc = null, limitCount = 5) => {
 };
 
 export const recordReelView = async (uid, reelId) => {
-  await setDoc(doc(db, 'reelViews', `${uid}_${reelId}`), {
-    userId: uid, reelId, viewedAt: serverTimestamp()
-  }, { merge: true });
+  const viewRef = doc(db, 'reelViews', `${uid}_${reelId}`);
+  const snap = await getDoc(viewRef);
+  if (snap.exists()) return; // already counted this user's view
+  await setDoc(viewRef, { userId: uid, reelId, viewedAt: serverTimestamp() });
   await updateDoc(doc(db, 'reels', reelId), { viewsCount: increment(1) });
+};
+
+export const shareReel = async (reelId) => {
+  await updateDoc(doc(db, 'reels', reelId), { sharesCount: increment(1) });
 };
 
 export const likeReel = async (uid, reelId, authorId) => {

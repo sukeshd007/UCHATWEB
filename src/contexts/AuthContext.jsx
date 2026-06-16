@@ -6,6 +6,7 @@ import { subscribeToUser } from '../firebase/firestoreService';
 const AuthContext = createContext(null);
 
 export const OWNER_EMAILS = ['support.uchat@gmail.com', 'help.uchat@outlook.com'];
+export const OWNER_USERNAMES = ['sukesh._.official'];
 
 export const AuthProvider = ({ children }) => {
   const [firebaseUser, setFirebaseUser] = useState(null);
@@ -59,7 +60,7 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  const isOwner = OWNER_EMAILS.includes(userProfile?.email);
+  const isOwner = OWNER_EMAILS.includes(userProfile?.email) || OWNER_USERNAMES.includes(userProfile?.username);
   const isAdmin = userProfile?.role === 'admin' || isOwner;
   const isProfileComplete = userProfile?.profileSetupComplete === true;
   const banUntil = userProfile?.banUntil;

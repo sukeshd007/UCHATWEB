@@ -1,7 +1,7 @@
 // src/pages/AuthPage.jsx
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Eye, EyeOff, Mail, Lock, Phone, ArrowRight, Loader2, UserCircle2, Sparkles, KeyRound } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, Phone, ArrowRight, Loader2, UserCircle2, KeyRound } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -45,14 +45,8 @@ export default function AuthPage() {
   });
 
   const handleEmailSignup = () => withLoading(async () => {
-    if (form.password !== form.confirmPassword) {
-      toast.error('Passwords do not match');
-      return;
-    }
-    if (form.password.length < 6) {
-      toast.error('Password must be at least 6 characters');
-      return;
-    }
+    if (form.password !== form.confirmPassword) { toast.error('Passwords do not match'); return; }
+    if (form.password.length < 6) { toast.error('Password must be at least 6 characters'); return; }
     await registerWithEmail(form.email, form.password);
     toast.success('Account created! Please verify your email.');
     navigate('/onboarding');
@@ -72,7 +66,7 @@ export default function AuthPage() {
   const handlePasswordReset = () => withLoading(async () => {
     if (!form.email) { toast.error('Enter your email first'); return; }
     await sendPasswordReset(form.email);
-    toast.success('Password reset email sent!');
+    toast.success('Password reset email sent.');
   });
 
   const handleSendOTP = () => withLoading(async () => {
@@ -93,13 +87,13 @@ export default function AuthPage() {
     await sendSignInLinkToEmail(auth, form.email, ACTION_CODE_SETTINGS);
     window.localStorage.setItem('emailForSignIn', form.email);
     setMagicSent(true);
-    toast.success('Magic link sent! Check your inbox.');
+    toast.success('Magic link sent. Check your inbox.');
   });
 
   const TABS = [
     { id: 'login', label: 'Sign In' },
     { id: 'signup', label: 'Sign Up' },
-    { id: 'phone', label: 'Phone' },
+    { id: 'phone', label: 'Phone OTP' },
     { id: 'magic', label: 'Magic Link' },
   ];
 
@@ -111,7 +105,7 @@ export default function AuthPage() {
           className={styles.brand}
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
+          transition={{ duration: 0.4 }}
         >
           <div className={styles.logo}><span>U</span></div>
           <h1 className={styles.brandName}>UChat</h1>
@@ -120,11 +114,11 @@ export default function AuthPage() {
 
         <motion.div
           className={styles.card}
-          initial={{ opacity: 0, y: 24 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.1 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
         >
-          {/* Scrollable tab bar */}
+          {/* Tab bar */}
           <div className={styles.tabsWrap}>
             <div className={styles.tabs}>
               {TABS.map(t => (
@@ -142,16 +136,16 @@ export default function AuthPage() {
           <AnimatePresence mode="wait">
             <motion.div
               key={tab}
-              initial={{ opacity: 0, x: 12 }}
+              initial={{ opacity: 0, x: 10 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -12 }}
-              transition={{ duration: 0.2 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.18 }}
             >
-              {/* ── Sign In ─────────────────────────────────── */}
+              {/* Sign In */}
               {tab === 'login' && (
                 <div className={styles.form}>
                   <InputField
-                    icon={<Mail size={16} />}
+                    icon={<Mail size={15} />}
                     type="email"
                     placeholder="Email address"
                     value={form.email}
@@ -160,35 +154,29 @@ export default function AuthPage() {
                   />
                   <div className={styles.passwordField}>
                     <InputField
-                      icon={<Lock size={16} />}
+                      icon={<Lock size={15} />}
                       type={showPassword ? 'text' : 'password'}
                       placeholder="Password"
                       value={form.password}
                       onChange={handle('password')}
                       onKeyDown={e => e.key === 'Enter' && handleEmailLogin()}
                     />
-                    <button
-                      className={styles.eyeBtn}
-                      onClick={() => setShowPassword(s => !s)}
-                      type="button"
-                    >
-                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    <button className={styles.eyeBtn} onClick={() => setShowPassword(s => !s)} type="button">
+                      {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                   <button className={styles.forgotLink} onClick={handlePasswordReset}>
                     Forgot password?
                   </button>
-                  <PrimaryButton onClick={handleEmailLogin} loading={loading}>
-                    Sign In
-                  </PrimaryButton>
+                  <PrimaryButton onClick={handleEmailLogin} loading={loading}>Sign In</PrimaryButton>
                 </div>
               )}
 
-              {/* ── Sign Up ─────────────────────────────────── */}
+              {/* Sign Up */}
               {tab === 'signup' && (
                 <div className={styles.form}>
                   <InputField
-                    icon={<Mail size={16} />}
+                    icon={<Mail size={15} />}
                     type="email"
                     placeholder="Email address"
                     value={form.email}
@@ -196,19 +184,19 @@ export default function AuthPage() {
                   />
                   <div className={styles.passwordField}>
                     <InputField
-                      icon={<Lock size={16} />}
+                      icon={<Lock size={15} />}
                       type={showPassword ? 'text' : 'password'}
-                      placeholder="Password (min 6 chars)"
+                      placeholder="Password (min 6 characters)"
                       value={form.password}
                       onChange={handle('password')}
                     />
                     <button className={styles.eyeBtn} onClick={() => setShowPassword(s => !s)} type="button">
-                      {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                   <div className={styles.passwordField}>
                     <InputField
-                      icon={<Lock size={16} />}
+                      icon={<Lock size={15} />}
                       type={showConfirm ? 'text' : 'password'}
                       placeholder="Confirm password"
                       value={form.confirmPassword}
@@ -216,27 +204,25 @@ export default function AuthPage() {
                       onKeyDown={e => e.key === 'Enter' && handleEmailSignup()}
                     />
                     <button className={styles.eyeBtn} onClick={() => setShowConfirm(s => !s)} type="button">
-                      {showConfirm ? <EyeOff size={16} /> : <Eye size={16} />}
+                      {showConfirm ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                   </div>
                   {form.password && form.confirmPassword && (
                     <PasswordMatch match={form.password === form.confirmPassword} />
                   )}
                   <PasswordStrength password={form.password} />
-                  <PrimaryButton onClick={handleEmailSignup} loading={loading}>
-                    Create Account
-                  </PrimaryButton>
+                  <PrimaryButton onClick={handleEmailSignup} loading={loading}>Create Account</PrimaryButton>
                 </div>
               )}
 
-              {/* ── Phone OTP ────────────────────────────────── */}
+              {/* Phone OTP */}
               {tab === 'phone' && (
                 <div className={styles.form}>
                   {!otpSent ? (
                     <>
-                      <p className={styles.otpHint}>Enter your phone number with country code</p>
+                      <p className={styles.otpHint}>Enter your phone number with country code (e.g. +91 98765 43210)</p>
                       <InputField
-                        icon={<Phone size={16} />}
+                        icon={<Phone size={15} />}
                         type="tel"
                         placeholder="+1 234 567 8900"
                         value={form.phone}
@@ -250,30 +236,30 @@ export default function AuthPage() {
                       <p className={styles.otpHint}>Enter the 6-digit code sent to <strong>{form.phone}</strong></p>
                       <InputField
                         type="text"
-                        placeholder="● ● ● ● ● ●"
+                        placeholder="6-digit code"
                         value={form.otp}
                         onChange={handle('otp')}
                         maxLength={6}
                         className={styles.otpInput}
                       />
-                      <PrimaryButton onClick={handleVerifyOTP} loading={loading}>Verify & Continue</PrimaryButton>
-                      <button className={styles.forgotLink} onClick={() => setOtpSent(false)}>← Change number</button>
+                      <PrimaryButton onClick={handleVerifyOTP} loading={loading}>Verify and Continue</PrimaryButton>
+                      <button className={styles.forgotLink} onClick={() => setOtpSent(false)}>Change number</button>
                     </>
                   )}
                 </div>
               )}
 
-              {/* ── Magic Link ───────────────────────────────── */}
+              {/* Magic Link */}
               {tab === 'magic' && (
                 <div className={styles.form}>
                   {!magicSent ? (
                     <>
                       <div className={styles.magicInfo}>
-                        <Sparkles size={18} style={{ color: '#7C3AED', flexShrink: 0 }} />
+                        <KeyRound size={16} style={{ color: 'var(--brand-color)', flexShrink: 0 }} />
                         <p>No password needed. We'll send a one-click sign-in link to your email.</p>
                       </div>
                       <InputField
-                        icon={<Mail size={16} />}
+                        icon={<Mail size={15} />}
                         type="email"
                         placeholder="Email address"
                         value={form.email}
@@ -281,13 +267,13 @@ export default function AuthPage() {
                         onKeyDown={e => e.key === 'Enter' && handleMagicLink()}
                       />
                       <PrimaryButton onClick={handleMagicLink} loading={loading}>
-                        <KeyRound size={16} /> Send Magic Link
+                        Send Magic Link
                       </PrimaryButton>
                     </>
                   ) : (
                     <div className={styles.magicSent}>
-                      <div className={styles.magicIcon}>✉️</div>
-                      <h3>Check your inbox!</h3>
+                      <Mail size={32} style={{ color: 'var(--brand-color)', marginBottom: 8 }} />
+                      <h3>Check your inbox</h3>
                       <p>We sent a sign-in link to <strong>{form.email}</strong>. Click it to log in instantly.</p>
                       <button className={styles.forgotLink} onClick={() => setMagicSent(false)}>Resend link</button>
                     </div>
@@ -297,21 +283,21 @@ export default function AuthPage() {
             </motion.div>
           </AnimatePresence>
 
-          <div className={styles.divider}><span>or continue with</span></div>
+          <div className={styles.divider}><span>or</span></div>
 
           <div className={styles.socials}>
             <SocialButton onClick={handleGoogle} disabled={loading}>
               <GoogleIcon />
-              <span>Google</span>
+              <span>Continue with Google</span>
             </SocialButton>
             <SocialButton onClick={handleGuest} disabled={loading} variant="ghost">
-              <UserCircle2 size={18} />
+              <UserCircle2 size={17} />
               <span>Continue as Guest</span>
             </SocialButton>
           </div>
 
           <p className={styles.guestNote}>
-            Guest accounts get a permanent unique ID (e.g. guest0123456). Username cannot be changed later.
+            Guest accounts get a permanent unique ID. Username cannot be changed later.
           </p>
         </motion.div>
 
@@ -324,8 +310,6 @@ export default function AuthPage() {
   );
 }
 
-// ── Sub-components ──────────────────────────────────────────────────────────
-
 const InputField = ({ icon, className = '', ...props }) => (
   <div className={styles.inputWrap}>
     {icon && <span className={styles.inputIcon}>{icon}</span>}
@@ -333,9 +317,9 @@ const InputField = ({ icon, className = '', ...props }) => (
   </div>
 );
 
-const PrimaryButton = ({ children, loading, onClick, ...props }) => (
-  <button className={styles.primaryBtn} onClick={onClick} disabled={loading} {...props}>
-    {loading ? <Loader2 size={18} className="animate-spin" /> : <>{children} <ArrowRight size={16} /></>}
+const PrimaryButton = ({ children, loading, onClick }) => (
+  <button className={styles.primaryBtn} onClick={onClick} disabled={loading}>
+    {loading ? <Loader2 size={17} className="animate-spin" /> : <>{children} <ArrowRight size={15} /></>}
   </button>
 );
 
@@ -360,7 +344,8 @@ const PasswordStrength = ({ password }) => {
     <div className={styles.strengthWrap}>
       <div className={styles.strengthBars}>
         {[0,1,2,3].map(i => (
-          <div key={i} className={styles.strengthBar} style={{ background: i < score ? colors[score] : 'var(--border-default)' }} />
+          <div key={i} className={styles.strengthBar}
+            style={{ background: i < score ? colors[score] : 'var(--border-default)' }} />
         ))}
       </div>
       <span style={{ fontSize: 11, color: colors[score], fontWeight: 600 }}>{labels[score]}</span>
@@ -370,12 +355,12 @@ const PasswordStrength = ({ password }) => {
 
 const PasswordMatch = ({ match }) => (
   <p style={{ fontSize: 12, color: match ? '#10B981' : '#EF4444', fontWeight: 600, marginTop: -4 }}>
-    {match ? '✓ Passwords match' : '✗ Passwords do not match'}
+    {match ? 'Passwords match' : 'Passwords do not match'}
   </p>
 );
 
 const GoogleIcon = () => (
-  <svg width="18" height="18" viewBox="0 0 24 24">
+  <svg width="17" height="17" viewBox="0 0 24 24">
     <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
     <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
     <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>

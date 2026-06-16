@@ -25,7 +25,8 @@ const ProtectedRoute = ({ children, requireAdmin = false }) => {
   if (loading) return <AppLoader />;
   if (!isAuthenticated) return <Navigate to="/auth" replace />;
   if (isBanned) return <BannedScreen />;
-  if (!isProfileComplete && !isGuest && window.location.pathname !== '/onboarding')
+  // Guests skip onboarding entirely
+  if (!isGuest && !isProfileComplete && window.location.pathname !== '/onboarding')
     return <Navigate to="/onboarding" replace />;
   if (requireAdmin && !isAdmin) return <Navigate to="/" replace />;
   return children;
@@ -59,7 +60,7 @@ const BannedScreen = () => {
       gap: 16, padding: '24px', textAlign: 'center',
       background: 'var(--bg-primary)',
     }}>
-      <div style={{ fontSize: 64 }}>🚫</div>
+      <div style={{ fontSize: 48, marginBottom: 8 }}>—</div>
       <h2 style={{ fontSize: 22, fontWeight: 800 }}>Account Suspended</h2>
       <p style={{ fontSize: 14, color: 'var(--text-secondary)', maxWidth: 360, lineHeight: 1.6 }}>
         Your account has been suspended for violating UChat's Community Guidelines.

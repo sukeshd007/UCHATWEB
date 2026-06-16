@@ -1,14 +1,20 @@
 // src/components/reels/CreateReelModal.jsx
+// Owner (sukesh._.official) can upload from local file without cloud storage.
+// Everyone else uploads via Cloudinary/Firebase Storage as normal.
 import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { X, Video, Loader2 } from 'lucide-react';
+import { X, Video, Loader2, HardDrive, Cloud } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { createReel } from '../../firebase/firestoreService';
+import { OWNER_USERNAMES } from '../../contexts/AuthContext';
+import { createReel, createLocalReel } from '../../firebase/firestoreService';
 import { uploadReelVideo } from '../../firebase/storageService';
+import { saveLocalReelVideo } from '../../utils/localDB';
 import toast from 'react-hot-toast';
 
 export default function CreateReelModal({ onClose }) {
-  const { uid } = useAuth();
+  const { uid, userProfile } = useAuth();
+  const isOwner = OWNER_USERNAMES.includes(userProfile?.username);
+
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [title, setTitle] = useState('');
@@ -16,38 +22,51 @@ export default function CreateReelModal({ onClose }) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [step, setStep] = useState(0);
+  // Owner mode: 'cloud' uses normal upload, 'local' stores blob URL in Firestore
+  const [uploadMode, setUploadMode] = useState('cloud');
   const fileRef = useRef();
 
   const handleFile = (e) => {
     const f = e.target.files[0];
     if (!f) return;
-    if (!f.type.startsWith('video/')) { toast.error('Please select a video'); return; }
-    if (f.size > 100 * 1024 * 1024) { toast.error('Video must be under 100MB'); return; }
-
-    // Check duration
+    if (!f.type.startsWith('video/')) { toast.error('Please select a video file'); return; }
     const url = URL.createObjectURL(f);
     const vid = document.createElement('video');
     vid.src = url;
     vid.onloadedmetadata = () => {
-      if (vid.duration > 120) { toast.error('Reel max duration is 2 minutes'); URL.revokeObjectURL(url); return; }
       setFile(f);
       setPreview(url);
       setStep(1);
     };
+    vid.onerror = () => { toast.error('Could not read video file'); URL.revokeObjectURL(url); };
   };
 
   const handleSubmit = async () => {
     if (!uid || !file || uploading) return;
     setUploading(true);
     try {
-      const result = await uploadReelVideo(file, uid, setProgress);
-      await createReel(uid, {
-        videoUrl: result.url,
-        videoPath: result.path,
-        title: title.trim(),
-        caption: caption.trim()
-      });
-      toast.success('Reel shared! 🎬');
+      if (isOwner && uploadMode === 'local') {
+        // Save the actual File blob to IndexedDB first, get Firestore ID back
+        const reelId = await createLocalReel(uid, {
+          videoUrl: '', // placeholder; resolved from IndexedDB on playback
+          localFile: true,
+          title: title.trim(),
+          caption: caption.trim(),
+        });
+        // Store the actual video File in IndexedDB keyed by reelId
+        await saveLocalReelVideo(reelId, file);
+        toast.success('Reel saved from local file!');
+      } else {
+        // Standard upload to cloud storage
+        const result = await uploadReelVideo(file, uid, (p) => setProgress(p));
+        await createReel(uid, {
+          videoUrl: result.url,
+          videoPath: result.path,
+          title: title.trim(),
+          caption: caption.trim(),
+        });
+        toast.success('Reel shared!');
+      }
       onClose();
     } catch (e) {
       toast.error(e.message || 'Failed to share reel');
@@ -61,7 +80,7 @@ export default function CreateReelModal({ onClose }) {
       <motion.div
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         onClick={!uploading ? onClose : undefined}
-        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', zIndex: 'var(--z-modal)', backdropFilter: 'blur(8px)' }}
+        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 'var(--z-modal)', backdropFilter: 'blur(8px)' }}
       />
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
@@ -73,73 +92,107 @@ export default function CreateReelModal({ onClose }) {
           overflow: 'hidden', boxShadow: 'var(--modal-shadow)'
         }}
       >
+        {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
           <h3 style={{ fontSize: 15, fontWeight: 700 }}>New Reel</h3>
           <button onClick={onClose} style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--surface-3)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
-        {step === 0 ? (
+        {/* Owner upload mode picker */}
+        {isOwner && step === 0 && (
+          <div style={{ padding: '12px 16px 0', display: 'flex', gap: 8 }}>
+            <ModeBtn active={uploadMode === 'cloud'} onClick={() => setUploadMode('cloud')} icon={<Cloud size={14} />} label="Cloud Upload" />
+            <ModeBtn active={uploadMode === 'local'} onClick={() => setUploadMode('local')} icon={<HardDrive size={14} />} label="Local File (Owner)" />
+          </div>
+        )}
+
+        {/* Step 0: Pick file */}
+        {step === 0 && (
           <div
             onClick={() => fileRef.current?.click()}
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-              gap: 16, padding: 48, cursor: 'pointer', textAlign: 'center'
-            }}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 44, cursor: 'pointer', textAlign: 'center' }}
           >
-            <div style={{ width: 64, height: 64, borderRadius: 'var(--radius-xl)', background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Video size={28} style={{ color: 'var(--text-tertiary)' }} />
+            <div style={{ width: 60, height: 60, borderRadius: 'var(--radius-xl)', background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {isOwner && uploadMode === 'local'
+                ? <HardDrive size={26} style={{ color: 'var(--text-tertiary)' }} />
+                : <Video size={26} style={{ color: 'var(--text-tertiary)' }} />
+              }
             </div>
             <div>
-              <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Upload a video</p>
-              <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Max 2 minutes · MP4, WebM, MOV</p>
+              <p style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+                {isOwner && uploadMode === 'local' ? 'Pick from your device' : 'Upload a video'}
+              </p>
+              <p style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                {isOwner && uploadMode === 'local'
+                  ? 'MP4, WebM, MOV — plays from your local file (no cloud cost)'
+                  : 'Any size · MP4, WebM, MOV · Uploaded to cloud storage'
+                }
+              </p>
             </div>
-            <button style={{ padding: '10px 24px', borderRadius: 'var(--radius-full)', background: 'var(--brand-gradient)', color: 'white', fontSize: 14, fontWeight: 600 }}>
+            <button style={{ padding: '9px 22px', borderRadius: 'var(--radius-full)', background: 'var(--brand-gradient)', color: 'white', fontSize: 13, fontWeight: 600 }}>
               Select video
             </button>
             <input ref={fileRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={handleFile} />
           </div>
-        ) : (
+        )}
+
+        {/* Step 1: Caption + submit */}
+        {step === 1 && (
           <div>
             {preview && (
-              <div style={{ position: 'relative', background: '#000', aspectRatio: '9/16', maxHeight: 280, overflow: 'hidden' }}>
+              <div style={{ position: 'relative', background: '#000', aspectRatio: '9/16', maxHeight: 260, overflow: 'hidden' }}>
                 <video src={preview} controls muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               </div>
             )}
-            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {isOwner && uploadMode === 'local' && (
+                <div style={{ padding: '9px 12px', borderRadius: 'var(--radius-md)', background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', fontSize: 12, color: 'var(--text-secondary)' }}>
+                  Local file mode — video plays from your device. Other users will not see it unless you switch to cloud upload.
+                </div>
+              )}
               <input
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder="Reel title…"
+                placeholder="Add a title..."
                 maxLength={100}
-                style={{ width: '100%', padding: '11px 14px', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 14 }}
+                style={{ width: '100%', padding: '11px 13px', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 14 }}
               />
               <textarea
                 value={caption}
                 onChange={e => setCaption(e.target.value)}
-                placeholder="Add a caption…"
+                placeholder="Add a caption..."
                 rows={3}
                 maxLength={2200}
-                style={{ width: '100%', padding: '11px 14px', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 14, resize: 'none' }}
+                style={{ width: '100%', padding: '11px 13px', background: 'var(--input-bg)', border: '1px solid var(--input-border)', borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 14, resize: 'none' }}
               />
-              {uploading && (
+              {uploading && uploadMode === 'cloud' && (
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                    <span>Uploading…</span><span>{progress}%</span>
+                    <span>Uploading...</span><span>{progress}%</span>
                   </div>
                   <div style={{ height: 3, background: 'var(--border-default)', borderRadius: 2, overflow: 'hidden' }}>
                     <div style={{ height: '100%', background: 'var(--brand-gradient)', width: `${progress}%`, transition: 'width 0.3s' }} />
                   </div>
                 </div>
               )}
-              <button
-                onClick={handleSubmit}
-                disabled={uploading}
-                style={{ width: '100%', padding: '13px', background: 'var(--brand-gradient)', color: 'white', borderRadius: 'var(--radius-md)', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: uploading ? 0.7 : 1 }}
-              >
-                {uploading ? <><Loader2 size={16} className="animate-spin" /> Uploading…</> : 'Share Reel 🎬'}
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => setStep(0)}
+                  disabled={uploading}
+                  style={{ flex: 1, padding: '12px', border: '1px solid var(--border-default)', borderRadius: 'var(--radius-md)', fontSize: 14, color: 'var(--text-primary)', background: 'transparent', cursor: 'pointer' }}
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleSubmit}
+                  disabled={uploading}
+                  style={{ flex: 2, padding: '12px', background: 'var(--brand-gradient)', color: 'white', borderRadius: 'var(--radius-md)', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, opacity: uploading ? 0.7 : 1 }}
+                >
+                  {uploading ? <><Loader2 size={15} className="animate-spin" /> Uploading...</> : 'Share Reel'}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -147,3 +200,18 @@ export default function CreateReelModal({ onClose }) {
     </>
   );
 }
+
+const ModeBtn = ({ active, onClick, icon, label }) => (
+  <button
+    onClick={onClick}
+    style={{
+      flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-md)', fontSize: 12, fontWeight: 600,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer',
+      background: active ? 'var(--brand-gradient)' : 'var(--surface-3)',
+      color: active ? 'white' : 'var(--text-secondary)',
+      border: 'none', transition: 'all 0.15s'
+    }}
+  >
+    {icon} {label}
+  </button>
+);

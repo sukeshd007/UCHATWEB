@@ -3,7 +3,7 @@
 // Everything a user receives is saved here so the app works fully offline.
 
 const DB_NAME = 'uchat-local';
-const DB_VERSION = 3;
+const DB_VERSION = 4; // bumped: added localReelVideos store
 
 let _db = null;
 
@@ -25,6 +25,8 @@ function openDB() {
       if (!db.objectStoreNames.contains('posts'))   db.createObjectStore('posts',   { keyPath: 'id' });
       if (!db.objectStoreNames.contains('reels'))   db.createObjectStore('reels',   { keyPath: 'id' });
       if (!db.objectStoreNames.contains('outbox'))  db.createObjectStore('outbox',  { keyPath: 'tempId' });
+      // Stores actual video File/Blob for owner local reels — persists across sessions
+      if (!db.objectStoreNames.contains('localReelVideos')) db.createObjectStore('localReelVideos', { keyPath: 'reelId' });
     };
     req.onsuccess  = (e) => { _db = e.target.result; resolve(_db); };
     req.onerror    = ()  => reject(req.error);
@@ -145,3 +147,18 @@ export const getCachedReels = ()      => getAll('reels');
 export const addToOutbox      = (msg)    => putOne('outbox', msg);
 export const getOutbox        = ()       => getAll('outbox');
 export const removeFromOutbox = (tempId) => delOne('outbox', tempId);
+
+// ── Local Reel Videos (owner only) ───────────────────────────────────────────
+// Stores the actual video File blob in IndexedDB so it persists across sessions.
+// reelId is the Firestore doc ID returned after createLocalReel.
+
+export const saveLocalReelVideo = (reelId, blob) =>
+  putOne('localReelVideos', { reelId, blob, savedAt: Date.now() });
+
+export async function getLocalReelVideo(reelId) {
+  const r = await getOne('localReelVideos', reelId);
+  if (!r?.blob) return null;
+  return URL.createObjectURL(r.blob);
+}
+
+export const deleteLocalReelVideo = (reelId) => delOne('localReelVideos', reelId);
