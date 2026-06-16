@@ -82,6 +82,49 @@ export default {
       return json({ deleted: key }, 200, env, origin);
     }
 
+    // ── POST /send-notification — broadcast FCM push to all UChat users ────────
+    // Body: { title, body, url?, adminSecret }
+    // Setup: add FCM_SERVER_KEY and ADMIN_SECRET as env vars in Cloudflare Worker dashboard
+    // Get FCM_SERVER_KEY: Firebase Console → Project Settings → Cloud Messaging → Server key
+    if (request.method === 'POST' && url.pathname === '/send-notification') {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, env, origin); }
+
+      const { title, body: msgBody, url: clickUrl, adminSecret } = body;
+
+      // Protect endpoint with a secret set in Cloudflare dashboard
+      if (!env.ADMIN_SECRET || adminSecret !== env.ADMIN_SECRET) {
+        return json({ error: 'Unauthorized' }, 401, env, origin);
+      }
+
+      if (!title || !msgBody) return json({ error: 'title and body required' }, 400, env, origin);
+
+      const fcmKey = env.FCM_SERVER_KEY;
+      if (!fcmKey) return json({ error: 'FCM_SERVER_KEY not configured' }, 500, env, origin);
+
+      const fcmRes = await fetch('https://fcm.googleapis.com/fcm/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `key=${fcmKey}`,
+        },
+        body: JSON.stringify({
+          to: '/topics/all',
+          notification: {
+            title,
+            body: msgBody,
+            icon: '/icons/icon-192.png',
+            click_action: clickUrl || 'https://uchatweb.pages.dev',
+          },
+          data: { url: clickUrl || '/', type: 'broadcast' },
+        }),
+      });
+
+      const fcmResult = await fcmRes.json();
+      if (fcmRes.ok) return json({ success: true, result: fcmResult }, 200, env, origin);
+      return json({ error: 'FCM send failed', details: fcmResult }, 500, env, origin);
+    }
+
     return json({ error: 'Not found' }, 404, env, origin);
   },
 };

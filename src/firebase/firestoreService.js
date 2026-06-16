@@ -256,13 +256,13 @@ export const getUserPosts = async (uid, lastDoc = null, limitCount = 12) => {
 
 export const likePost = async (uid, postId, authorId) => {
   const likeId = `${uid}_${postId}`;
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'likes', likeId), {
+  // Write like doc first
+  await setDoc(doc(db, 'likes', likeId), {
     userId: uid, postId, type: 'post', createdAt: serverTimestamp()
   });
-  batch.update(doc(db, 'posts', postId), { likesCount: increment(1) });
-  await batch.commit();
-  
+  // Update count separately (post author rule allows likesCount changes)
+  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(1) });
+
   if (authorId !== uid) {
     await createNotification({
       recipientId: authorId,
@@ -270,15 +270,13 @@ export const likePost = async (uid, postId, authorId) => {
       type: 'like',
       postId,
       message: 'liked your post'
-    });
+    }).catch(() => {}); // non-blocking
   }
 };
 
 export const unlikePost = async (uid, postId) => {
-  const batch = writeBatch(db);
-  batch.delete(doc(db, 'likes', `${uid}_${postId}`));
-  batch.update(doc(db, 'posts', postId), { likesCount: increment(-1) });
-  await batch.commit();
+  await deleteDoc(doc(db, 'likes', `${uid}_${postId}`));
+  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(-1) }).catch(() => {});
 };
 
 export const isPostLiked = async (uid, postId) => {
@@ -414,19 +412,24 @@ export const shareReel = async (reelId) => {
 
 export const likeReel = async (uid, reelId, authorId) => {
   const likeId = `${uid}_reel_${reelId}`;
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'likes', likeId), {
+  await setDoc(doc(db, 'likes', likeId), {
     userId: uid, reelId, type: 'reel', createdAt: serverTimestamp()
   });
-  batch.update(doc(db, 'reels', reelId), { likesCount: increment(1) });
-  await batch.commit();
+  await updateDoc(doc(db, 'reels', reelId), { likesCount: increment(1) });
+  if (authorId && authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'like',
+      reelId,
+      message: 'liked your reel'
+    }).catch(() => {});
+  }
 };
 
 export const unlikeReel = async (uid, reelId) => {
-  const batch = writeBatch(db);
-  batch.delete(doc(db, 'likes', `${uid}_reel_${reelId}`));
-  batch.update(doc(db, 'reels', reelId), { likesCount: increment(-1) });
-  await batch.commit();
+  await deleteDoc(doc(db, 'likes', `${uid}_reel_${reelId}`));
+  await updateDoc(doc(db, 'reels', reelId), { likesCount: increment(-1) }).catch(() => {});
 };
 
 export const isReelLiked = async (uid, reelId) => {

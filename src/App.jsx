@@ -8,6 +8,7 @@ import AuthPage from './pages/AuthPage';
 import OnboardingPage from './pages/OnboardingPage';
 import HomePage from './pages/HomePage';
 import ReelsPage from './pages/ReelsPage';
+import ReelPage from './pages/ReelPage';
 import SearchPage from './pages/SearchPage';
 import MessagesPage from './pages/MessagesPage';
 import ChatPage from './pages/ChatPage';
@@ -76,6 +77,9 @@ const AppRoutes = () => (
   <Routes>
     <Route path="/auth" element={<PublicRoute><AuthPage /></PublicRoute>} />
     <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
+
+    {/* Public shareable reel page — no login required to view */}
+    <Route path="/reels/:reelId" element={<ReelPage />} />
 
     <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
       <Route path="/" element={<HomePage />} />

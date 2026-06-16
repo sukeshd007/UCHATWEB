@@ -1,6 +1,6 @@
 // src/contexts/AuthContext.jsx
 import { createContext, useContext, useEffect, useState } from 'react';
-import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus } from '../firebase/authService';
+import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus, handleGoogleRedirectResult } from '../firebase/authService';
 import { subscribeToUser } from '../firebase/firestoreService';
 import { initPushNotifications, onForegroundMessage, disablePush } from '../firebase/messagingService';
 import toast from 'react-hot-toast';
@@ -17,6 +17,11 @@ export const AuthProvider = ({ children }) => {
   const [unsubscribeProfile, setUnsubscribeProfile] = useState(null);
 
   useEffect(() => {
+    // Handle Google redirect result on mobile (runs once on page load)
+    handleGoogleRedirectResult().catch(err => {
+      console.error('Google redirect error:', err?.message);
+    });
+
     const unsubAuth = subscribeToAuthState(async (user) => {
       setFirebaseUser(user);
 

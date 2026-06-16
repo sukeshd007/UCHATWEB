@@ -17,20 +17,29 @@ service cloud.firestore {
     }
 
     function isOwnerAccount() {
-      return isAuth() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.email == 'support.uchat@gmail.com';
+      // Check Firebase Auth token email directly — no Firestore read needed, never fails
+      return isAuth() && (
+        request.auth.token.email == 'support.uchat@gmail.com' ||
+        request.auth.token.email == 'help.uchat@outlook.com'
+      );
     }
 
     function isAdmin() {
       return isAuth() && (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-        isOwnerAccount()
+        isOwnerAccount() ||
+        // Fallback: check user doc role field
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') == 'admin')
       );
     }
 
     function isNotBanned() {
-      return isAuth() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.banned != true;
+      // Only do the expensive get() if the user is authenticated
+      // Use a fallback of false if banned field doesn't exist (means not banned)
+      return isAuth() && (
+        !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banned', false) != true
+      );
     }
 
     function isProfileComplete() {
@@ -81,8 +90,8 @@ service cloud.firestore {
         && request.resource.data.authorId == request.auth.uid;
       allow update: if isAuth() && (
         resource.data.authorId == request.auth.uid ||
-        // Like/comment count updates
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'sharesCount', 'savedCount'])
+        (isNotBanned() && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['likesCount', 'commentsCount', 'sharesCount', 'savedCount']))
       );
       allow delete: if isAuth() && (
         resource.data.authorId == request.auth.uid || isAdmin()
@@ -92,12 +101,14 @@ service cloud.firestore {
     // ─── Reels ──────────────────────────────────────────────────────────────
 
     match /reels/{reelId} {
-      allow read: if isAuth();
+      // Public read so shared reel links work without login
+      allow read: if true;
       allow create: if isAuth() && isNotBanned() && isProfileComplete()
         && request.resource.data.authorId == request.auth.uid;
       allow update: if isAuth() && (
         resource.data.authorId == request.auth.uid ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'viewsCount'])
+        (isNotBanned() && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['likesCount', 'commentsCount', 'viewsCount', 'sharesCount']))
       );
       allow delete: if isAuth() && (resource.data.authorId == request.auth.uid || isAdmin());
     }

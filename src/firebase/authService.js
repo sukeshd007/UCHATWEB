@@ -3,6 +3,8 @@ import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   signInAnonymously,
   signOut,
@@ -20,6 +22,9 @@ import { auth, db } from './config';
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Use redirect on mobile (popups blocked on Android/iOS browsers), popup on desktop
+const isMobile = () => /Android|iPhone|iPad|iPod|webOS|BlackBerry/i.test(navigator.userAgent);
 
 // ─── Generate Guest Username ──────────────────────────────────────────────────
 // Uses a zero-padded 7-digit number derived from the current timestamp.
@@ -48,9 +53,32 @@ export const loginWithEmail = async (email, password) => {
 // ─── Google ──────────────────────────────────────────────────────────────────
 
 export const loginWithGoogle = async () => {
+  if (isMobile()) {
+    // Redirect flow — page reloads after Google auth, result picked up in AuthContext
+    sessionStorage.setItem('googleRedirectPending', '1');
+    await signInWithRedirect(auth, googleProvider);
+    return null;
+  }
   const cred = await signInWithPopup(auth, googleProvider);
   await ensureUserDocument(cred.user);
   return cred;
+};
+
+// Called once on app load — processes redirect result from Google on mobile
+export const handleGoogleRedirectResult = async () => {
+  try {
+    const result = await getRedirectResult(auth);
+    if (result?.user) {
+      await ensureUserDocument(result.user);
+      sessionStorage.removeItem('googleRedirectPending');
+      return result;
+    }
+  } catch (err) {
+    sessionStorage.removeItem('googleRedirectPending');
+    const code = err?.code || '';
+    if (code !== 'auth/no-current-user' && code !== 'auth/null-user') throw err;
+  }
+  return null;
 };
 
 // ─── Guest (Pure Firebase Anonymous Auth) ────────────────────────────────────

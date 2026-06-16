@@ -340,7 +340,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
   const [viewsCount, setViewsCount] = useState(reel.viewsCount || 0);
   const [commentsCount] = useState(reel.commentsCount || 0);
   const [sharesCount, setSharesCount] = useState(reel.sharesCount || 0);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = useState(false); // start unmuted
   const [playing, setPlaying] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
@@ -360,7 +360,15 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
     const video = videoRef.current;
     if (!video) return;
     if (isActive) {
-      video.play().then(() => setPlaying(true)).catch(() => {});
+      video.muted = muted;
+      video.play()
+        .then(() => setPlaying(true))
+        .catch(() => {
+          // Browser blocked unmuted autoplay — try muted
+          video.muted = true;
+          setMuted(true);
+          video.play().then(() => setPlaying(true)).catch(() => {});
+        });
       if (!viewedRef.current && uid) {
         viewedRef.current = true;
         recordReelView(uid, reel.id).then(() => {

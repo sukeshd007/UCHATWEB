@@ -260,8 +260,9 @@ svg { flex-shrink: 0; }
   z-index: var(--z-sticky);
 }
 
-/* TABLET (≥ 900px) */
-@media (min-width: 900px) {
+/* TABLET / DESKTOP — only on non-touch devices (mouse pointer).
+   This prevents the sidebar from showing on wide Android phones. */
+@media (min-width: 900px) and (hover: hover) and (pointer: fine) {
   .app-shell {
     flex-direction: row;
     padding-top: 0;
@@ -290,15 +291,15 @@ svg { flex-shrink: 0; }
   .bottom-nav-slot { display: none; }
 }
 
-/* DESKTOP (≥ 1100px) */
-@media (min-width: 1100px) {
+/* DESKTOP (≥ 1100px, non-touch only) */
+@media (min-width: 1100px) and (hover: hover) and (pointer: fine) {
   .top-nav-slot { left: var(--sidebar-w-expanded); }
   .side-nav-slot { width: var(--sidebar-w-expanded); }
   .main-content { margin-left: var(--sidebar-w-expanded); }
 }
 
-/* Large Desktop (≥ 1400px) */
-@media (min-width: 1400px) {
+/* Large Desktop (≥ 1400px, non-touch only) */
+@media (min-width: 1400px) and (hover: hover) and (pointer: fine) {
   .main-content { max-width: calc(100vw - var(--sidebar-w-expanded)); }
 }
 

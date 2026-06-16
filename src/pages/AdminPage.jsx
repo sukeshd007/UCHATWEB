@@ -54,6 +54,7 @@ export default function AdminPage() {
   const [selectedBanDur, setSelectedBanDur] = useState(BAN_DURATIONS[3]);
   const [notifTitle, setNotifTitle] = useState('');
   const [notifBody, setNotifBody] = useState('');
+  const [notifUrl, setNotifUrl] = useState('');
   const [notifToggle, setNotifToggle] = useState(true); // feedback notif toggle
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [secretMsgs, setSecretMsgs] = useState([]);
@@ -141,17 +142,38 @@ export default function AdminPage() {
   const sendPlatformNotification = async () => {
     if (!notifTitle.trim() || !notifBody.trim()) { toast.error('Fill in title and message'); return; }
     try {
+      const workerUrl = import.meta.env.VITE_R2_WORKER_URL;
+      const adminSecret = import.meta.env.VITE_ADMIN_SECRET;
+
+      if (workerUrl && adminSecret) {
+        const res = await fetch(`${workerUrl}/send-notification`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: notifTitle, body: notifBody, url: notifUrl || '/', adminSecret }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || 'Worker returned error');
+        }
+      }
+
+      // Always log in Firestore regardless
       await addDoc(collection(db, 'platform_notifications'), {
         title: notifTitle,
         body: notifBody,
+        url: notifUrl || '/',
         sentBy: uid,
         sentByUsername: userProfile?.username,
         createdAt: serverTimestamp(),
         type: 'broadcast',
       });
-      toast.success('Notification sent to all users!');
-      setNotifTitle(''); setNotifBody('');
-    } catch { toast.error('Failed to send'); }
+
+      toast.success('🔔 Notification sent to all users!');
+      setNotifTitle(''); setNotifBody(''); setNotifUrl('');
+    } catch (err) {
+      console.error('Broadcast error:', err);
+      toast.error(err.message || 'Failed to send notification');
+    }
   };
 
   const sendSecretMsg = async () => {
@@ -416,32 +438,40 @@ export default function AdminPage() {
         {/* Send Notification */}
         {tab === 'notifications' && (
           <div>
-            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Broadcast Notification</h3>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 16 }}>Send a push notification to all UChat users</p>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>📣 Broadcast Notification</h3>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>Send a push to ALL UChat users at once — free via Firebase FCM</p>
 
-            {/* Toggle */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border-subtle)', marginBottom: 16 }}>
-              <Bell size={16} style={{ color: '#7C3AED' }} />
-              <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>Enable broadcast notifications</span>
-              <ToggleSwitch value={notifToggle} onChange={() => setNotifToggle(v => !v)} />
+            {/* Setup note */}
+            <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', marginBottom: 14 }}>
+              <p style={{ fontSize: 12, color: '#F59E0B', fontWeight: 600, marginBottom: 4 }}>⚙️ One-time setup required</p>
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                1. Firebase Console → Project Settings → Cloud Messaging → copy <strong>Server key</strong><br/>
+                2. Cloudflare Worker dashboard → add env var <code>FCM_SERVER_KEY</code><br/>
+                3. Add env var <code>ADMIN_SECRET</code> (any password) to both Cloudflare Worker and your <code>.env</code> as <code>VITE_ADMIN_SECRET</code>
+              </p>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input
                 value={notifTitle} onChange={e => setNotifTitle(e.target.value)}
-                placeholder="Notification title…"
+                placeholder="Notification title (e.g. UChat 2.0 is live! 🎉)"
                 style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', fontSize: 14, outline: 'none' }}
               />
               <textarea
                 value={notifBody} onChange={e => setNotifBody(e.target.value)}
                 placeholder="Notification message…"
-                rows={4}
+                rows={3}
                 style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', fontSize: 14, outline: 'none', resize: 'vertical', fontFamily: 'inherit' }}
+              />
+              <input
+                value={notifUrl} onChange={e => setNotifUrl(e.target.value)}
+                placeholder="Click URL (optional, e.g. /reels)"
+                style={{ padding: '12px 14px', borderRadius: 12, background: 'var(--surface-2)', border: '1px solid var(--border-default)', color: 'var(--text-primary)', fontSize: 14, outline: 'none' }}
               />
               <button
                 onClick={sendPlatformNotification}
-                disabled={!notifToggle}
-                style={{ padding: '14px', borderRadius: 12, background: notifToggle ? 'linear-gradient(135deg,#7C3AED,#2563EB)' : 'var(--surface-3)', color: notifToggle ? 'white' : 'var(--text-tertiary)', border: 'none', fontWeight: 700, fontSize: 15, cursor: notifToggle ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                disabled={!notifTitle.trim() || !notifBody.trim()}
+                style={{ padding: '14px', borderRadius: 12, background: (notifTitle.trim() && notifBody.trim()) ? 'linear-gradient(135deg,#7C3AED,#2563EB)' : 'var(--surface-3)', color: (notifTitle.trim() && notifBody.trim()) ? 'white' : 'var(--text-tertiary)', border: 'none', fontWeight: 700, fontSize: 15, cursor: (notifTitle.trim() && notifBody.trim()) ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
               >
                 <Bell size={18} /> Send to All Users
               </button>

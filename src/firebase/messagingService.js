@@ -52,6 +52,20 @@ export const initPushNotifications = async (uid) => {
         fcmTokenUpdatedAt: serverTimestamp(),
         pushEnabled: true,
       });
+
+      // Subscribe token to /topics/all so admin broadcasts reach everyone
+      // This uses the FCM topic management API (free, no server needed)
+      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || 'uchatsite';
+      try {
+        await fetch(`https://iid.googleapis.com/iid/v1/${token}/rel/topics/all`, {
+          method: 'POST',
+          headers: {
+            Authorization: `key=${import.meta.env.VITE_FIREBASE_SERVER_KEY || ''}`,
+            'Content-Type': 'application/json',
+          },
+        });
+      } catch {} // Non-critical — broadcast may not reach this device but app still works
+
       console.log('FCM token saved ✓');
     }
 
