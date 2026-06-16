@@ -59,12 +59,15 @@ service cloud.firestore {
         (request.auth.uid == uid && isNotBanned() &&
           !request.resource.data.diff(resource.data).affectedKeys()
             .hasAny(['role', 'verified', 'banned', 'blacklisted', 'uid', 'email'])
-        ) ||
-        // Admins can update most fields
+        ) ||        // Admins can update most fields
         (isAdmin() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['email']))  ||
-        // System updates (follow counts, etc.)
-        (isAuth() && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['followersCount', 'followingCount', 'postsCount', 'reelsCount', 'onlineStatus', 'lastSeen']))
+        // Any authenticated user can increment/decrement follow counts on any user
+        // (triggered by follow/unfollow — the follower/following collections gate abuse)
+        (isAuth() && isNotBanned() && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['followersCount', 'followingCount'])) ||
+        // Own system fields (posts, reels count, online status)
+        (isAuth() && request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['postsCount', 'reelsCount', 'onlineStatus', 'lastSeen']))
       );
 
       allow delete: if isOwnerAccount();
@@ -238,6 +241,15 @@ service cloud.firestore {
       allow read: if isAuth();
       allow create: if isAuth() && request.resource.data.uid == request.auth.uid;
       allow delete: if isAdmin();
+    }
+
+    // ─── Feedback / Support / Verification requests ───────────────────────────
+
+    match /feedback/{docId} {
+      allow read: if isAdmin();
+      allow create: if isAuth()
+        && request.resource.data.uid == (request.auth.uid != null ? request.auth.uid : 'guest');
+      allow update, delete: if isAdmin();
     }
 
     // ─── Deny all else ────────────────────────────────────────────────────────

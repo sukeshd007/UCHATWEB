@@ -31,6 +31,7 @@ export default function ProfilePage() {
   const [tab, setTab] = useState('posts');
   const [loading, setLoading] = useState(true);
   const [following, setFollowing] = useState(false);
+  const [followsYou, setFollowsYou] = useState(false); // they follow you back
   const [followLoading, setFollowLoading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [notifOn, setNotifOn] = useState(false);
@@ -55,8 +56,12 @@ export default function ProfilePage() {
       const postsResult = await getUserPosts(p.id, null, 12);
       setPosts(postsResult.posts);
       if (uid && !isOwnProfile) {
-        const f = await isFollowing(uid, p.id);
-        setFollowing(f);
+        const [iFollow, theyFollow] = await Promise.all([
+          isFollowing(uid, p.id),
+          isFollowing(p.id, uid),
+        ]);
+        setFollowing(iFollow);
+        setFollowsYou(theyFollow);
       }
     } finally {
       setLoading(false);
@@ -67,9 +72,23 @@ export default function ProfilePage() {
     if (!uid || followLoading) return;
     setFollowLoading(true);
     try {
-      if (following) { await unfollowUser(uid, profile.id); setFollowing(false); }
-      else { await followUser(uid, profile.id); setFollowing(true); }
-    } catch { toast.error('Action failed'); }
+      if (following) {
+        await unfollowUser(uid, profile.id);
+        setFollowing(false);
+        toast('Unfollowed');
+      } else {
+        const result = await followUser(uid, profile.id);
+        setFollowing(true);
+        if (result?.followedBack) {
+          toast.success('You followed back! 🎉');
+        } else {
+          toast.success('Following!');
+        }
+      }
+    } catch (err) {
+      console.error('Follow error:', err);
+      toast.error('Action failed');
+    }
     finally { setFollowLoading(false); }
   };
 
@@ -119,7 +138,7 @@ export default function ProfilePage() {
         {/* Avatar + action buttons row */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginTop: -44, marginBottom: 14 }}>
           <div style={{ border: '4px solid var(--bg-primary)', borderRadius: '50%', background: 'var(--bg-primary)', flexShrink: 0 }}>
-            <Avatar src={profile.profilePhoto} name={profile.displayName} size={96} verified={profile.verified} />
+            <Avatar src={profile.profilePhoto} name={profile.displayName} size={96} />
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', paddingBottom: 4 }}>
             {isOwnProfile ? (
@@ -136,7 +155,7 @@ export default function ProfilePage() {
                   disabled={followLoading}
                   style={{
                     padding: '8px 20px', borderRadius: 12, fontSize: 14, fontWeight: 700,
-                    background: following ? 'transparent' : 'linear-gradient(135deg,#7C3AED,#2563EB)',
+                    background: following ? 'transparent' : (!followsYou ? 'linear-gradient(135deg,#7C3AED,#2563EB)' : 'linear-gradient(135deg,#059669,#0EA5E9)'),
                     border: following ? '1.5px solid var(--border-default)' : 'none',
                     color: following ? 'var(--text-primary)' : 'white',
                     opacity: followLoading ? 0.7 : 1,
@@ -144,7 +163,12 @@ export default function ProfilePage() {
                     transition: 'all 0.2s'
                   }}
                 >
-                  {following ? <><UserCheck size={15} /> Following</> : <><UserPlus size={15} /> Follow</>}
+                  {following
+                    ? <><UserCheck size={15} /> Following</>
+                    : followsYou
+                      ? <><UserPlus size={15} /> Follow Back</>
+                      : <><UserPlus size={15} /> Follow</>
+                  }
                 </button>
                 <button
                   onClick={handleMessage}
@@ -167,11 +191,10 @@ export default function ProfilePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 2 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>{profile.displayName}</h1>
           {profile.verified && (
-            <span style={{
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              width: 18, height: 18, borderRadius: '50%', background: '#0EA5E9',
-              fontSize: 10, color: 'white', fontWeight: 700
-            }}>✓</span>
+            <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'inline-block', flexShrink: 0 }}>
+              <path d="M20 2 L23.5 7.5 L30 6 L29.5 12.5 L36 15 L33 21 L38 26 L32.5 29.5 L33 36 L26.5 35 L24 41 L20 37.5 L16 41 L13.5 35 L7 36 L7.5 29.5 L2 26 L7 21 L4 15 L10.5 12.5 L10 6 L16.5 7.5 Z" fill="#1877F2"/>
+              <path d="M13.5 20.5 L18 25.5 L27 15" stroke="white" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           )}
           {profile.role === 'admin' && <Badge color="#F59E0B" bg="rgba(245,158,11,0.15)">ADMIN</Badge>}
           {profile.isGuest && <Badge color="#7C3AED" bg="rgba(124,58,237,0.1)">GUEST</Badge>}
@@ -179,9 +202,20 @@ export default function ProfilePage() {
         </div>
 
         {/* Username — always shown */}
-        <p style={{ fontSize: 14, color: 'var(--text-tertiary)', marginBottom: 10, fontWeight: 500 }}>
-          @{profile.username}
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <p style={{ fontSize: 14, color: 'var(--text-tertiary)', fontWeight: 500, margin: 0 }}>
+            @{profile.username}
+          </p>
+          {!isOwnProfile && followsYou && (
+            <span style={{
+              fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 8,
+              background: 'var(--surface-3)', color: 'var(--text-secondary)',
+              border: '1px solid var(--border-default)',
+            }}>
+              Follows you
+            </span>
+          )}
+        </div>
 
         {profile.bio && (
           <p style={{ fontSize: 14, lineHeight: 1.6, marginBottom: 8, whiteSpace: 'pre-wrap', color: 'var(--text-primary)' }}>

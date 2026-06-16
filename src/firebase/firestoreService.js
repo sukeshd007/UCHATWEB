@@ -117,41 +117,52 @@ export const getSuggestedUsers = async (currentUid, limitCount = 10) => {
 // ─── FOLLOW SYSTEM ────────────────────────────────────────────────────────────
 
 export const followUser = async (currentUid, targetUid) => {
+  // Step 1: Write follower/following docs (these rules are straightforward)
   const batch = writeBatch(db);
-  
   batch.set(doc(db, 'followers', `${targetUid}_${currentUid}`), {
     userId: targetUid,
     followerId: currentUid,
     createdAt: serverTimestamp()
   });
-  
   batch.set(doc(db, 'following', `${currentUid}_${targetUid}`), {
     userId: currentUid,
     followingId: targetUid,
     createdAt: serverTimestamp()
   });
-  
-  batch.update(doc(db, 'users', targetUid), { followersCount: increment(1) });
-  batch.update(doc(db, 'users', currentUid), { followingCount: increment(1) });
-  
   await batch.commit();
-  
-  // Create notification
+
+  // Step 2: Update counts separately (avoids batch rule conflicts on other user's doc)
+  await Promise.all([
+    updateDoc(doc(db, 'users', targetUid), { followersCount: increment(1) }),
+    updateDoc(doc(db, 'users', currentUid), { followingCount: increment(1) }),
+  ]);
+
+  // Step 3: Check if target already follows back (for "Follow Back" label)
+  const alreadyFollowsBack = await isFollowing(targetUid, currentUid);
+
+  // Step 4: Notify target
   await createNotification({
     recipientId: targetUid,
     senderId: currentUid,
     type: 'follow',
-    message: 'started following you'
+    message: alreadyFollowsBack ? 'followed you back' : 'started following you',
   });
+
+  return { followedBack: alreadyFollowsBack };
 };
 
 export const unfollowUser = async (currentUid, targetUid) => {
+  // Delete follower/following docs first
   const batch = writeBatch(db);
   batch.delete(doc(db, 'followers', `${targetUid}_${currentUid}`));
   batch.delete(doc(db, 'following', `${currentUid}_${targetUid}`));
-  batch.update(doc(db, 'users', targetUid), { followersCount: increment(-1) });
-  batch.update(doc(db, 'users', currentUid), { followingCount: increment(-1) });
   await batch.commit();
+
+  // Decrement counts separately
+  await Promise.all([
+    updateDoc(doc(db, 'users', targetUid), { followersCount: increment(-1) }).catch(() => {}),
+    updateDoc(doc(db, 'users', currentUid), { followingCount: increment(-1) }).catch(() => {}),
+  ]);
 };
 
 export const isFollowing = async (currentUid, targetUid) => {

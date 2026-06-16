@@ -93,25 +93,29 @@ export default function MessagesPage() {
         </div>
       </div>
 
-      {/* Notes bar */}
+      {/* Notes bar — Instagram story-circle style at top of messages */}
       {notes.length > 0 && (
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-          <div style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 4, scrollbarWidth: 'none' }}>
+        <div style={{ padding: '10px 16px 6px', borderBottom: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingBottom: 6, scrollbarWidth: 'none' }}>
             {notes.map(note => (
-              <div key={note.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+              <div key={note.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, flexShrink: 0, cursor: 'pointer', paddingTop: 30 }}>
                 <div style={{ position: 'relative' }}>
                   <div style={{
-                    position: 'absolute', top: -10, left: '50%', transform: 'translateX(-50%)',
-                    background: 'var(--surface-2)', border: '1px solid var(--border-default)',
-                    borderRadius: 8, padding: '2px 7px',
+                    position: 'absolute', top: -26, left: '50%', transform: 'translateX(-50%)',
+                    background: 'var(--surface-3)', border: '1px solid var(--border-default)',
+                    borderRadius: 9, padding: '2px 7px',
                     fontSize: 10, fontWeight: 500, whiteSpace: 'nowrap', maxWidth: 80,
-                    overflow: 'hidden', textOverflow: 'ellipsis'
+                    overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none',
                   }}>
-                    {note.text.slice(0, 20)}{note.text.length > 20 ? '…' : ''}
+                    {note.text.slice(0, 18)}{note.text.length > 18 ? '\u2026' : ''}
                   </div>
-                  <Avatar src={note.author?.profilePhoto} name={note.author?.displayName} size={44} />
+                  <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)', padding: 2 }}>
+                    <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'var(--bg-primary)', padding: 2, overflow: 'hidden' }}>
+                      <Avatar src={note.author?.profilePhoto} name={note.author?.displayName} size={48} />
+                    </div>
+                  </div>
                 </div>
-                <span style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 56, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-secondary)', maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {note.author?.displayName?.split(' ')[0]}
                 </span>
               </div>
@@ -119,7 +123,6 @@ export default function MessagesPage() {
           </div>
         </div>
       )}
-
       {/* Chat list */}
       <div>
         {filteredChats.length === 0 ? (

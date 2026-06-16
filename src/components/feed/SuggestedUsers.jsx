@@ -53,39 +53,62 @@ export default function SuggestedUsers() {
 
 const UserRow = ({ user, currentUid }) => {
   const [followed, setFollowed] = useState(false);
+  const [followsYou, setFollowsYou] = useState(false);
 
   useEffect(() => {
-    if (currentUid) isFollowing(currentUid, user.id).then(setFollowed);
+    if (!currentUid) return;
+    Promise.all([
+      isFollowing(currentUid, user.id),
+      isFollowing(user.id, currentUid),
+    ]).then(([iFollow, theyFollow]) => {
+      setFollowed(iFollow);
+      setFollowsYou(theyFollow);
+    });
   }, [currentUid, user.id]);
 
   const handleFollow = async () => {
     try {
-      if (followed) { await unfollowUser(currentUid, user.id); setFollowed(false); }
-      else { await followUser(currentUid, user.id); setFollowed(true); }
-    } catch { toast.error('Action failed'); }
+      if (followed) {
+        await unfollowUser(currentUid, user.id);
+        setFollowed(false);
+      } else {
+        await followUser(currentUid, user.id);
+        setFollowed(true);
+      }
+    } catch (err) {
+      console.error('Follow error:', err);
+      toast.error('Action failed');
+    }
   };
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 4px' }}>
       <Link to={`/profile/${user.username}`}>
-        <Avatar src={user.profilePhoto} name={user.displayName} size={36} verified={user.verified} />
+        <Avatar src={user.profilePhoto} name={user.displayName} size={36} />
       </Link>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <Link to={`/profile/${user.username}`} style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <Link to={`/profile/${user.username}`} style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {user.displayName}
-          {user.verified && <span style={{ marginLeft: 4, color: 'var(--verified-color)', fontSize: 11 }}>✓</span>}
+          {user.verified && (
+            <svg width="13" height="13" viewBox="0 0 40 40" fill="none" style={{ flexShrink: 0 }}>
+              <path d="M20 2 L23.5 7.5 L30 6 L29.5 12.5 L36 15 L33 21 L38 26 L32.5 29.5 L33 36 L26.5 35 L24 41 L20 37.5 L16 41 L13.5 35 L7 36 L7.5 29.5 L2 26 L7 21 L4 15 L10.5 12.5 L10 6 L16.5 7.5 Z" fill="#1877F2"/>
+              <path d="M13.5 20.5 L18 25.5 L27 15" stroke="white" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
         </Link>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>@{user.username}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          {followsYou && !followed ? '• Follows you' : `@${user.username}`}
+        </span>
       </div>
       <button
         onClick={handleFollow}
         style={{
           fontSize: 12, fontWeight: 700, flexShrink: 0,
-          color: followed ? 'var(--text-secondary)' : 'var(--brand-secondary)',
+          color: followed ? 'var(--text-secondary)' : (followsYou ? '#059669' : 'var(--brand-secondary)'),
           padding: '4px 0'
         }}
       >
-        {followed ? 'Following' : 'Follow'}
+        {followed ? 'Following' : followsYou ? 'Follow Back' : 'Follow'}
       </button>
     </div>
   );

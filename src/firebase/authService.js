@@ -139,9 +139,12 @@ export const sendPhoneOTP = async (phoneNumber, appVerifier) => {
 
 export const logoutCurrentDevice = async () => {
   if (auth.currentUser && !auth.currentUser.isAnonymous) {
-    await updateDoc(doc(db, 'users', auth.currentUser.uid), {
+    const uid = auth.currentUser.uid;
+    await updateDoc(doc(db, 'users', uid), {
       onlineStatus: false,
       lastSeen: serverTimestamp(),
+      fcmToken: null,
+      pushEnabled: false,
     }).catch(() => {});
   }
   return signOut(auth);

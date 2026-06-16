@@ -2,6 +2,8 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus } from '../firebase/authService';
 import { subscribeToUser } from '../firebase/firestoreService';
+import { initPushNotifications, onForegroundMessage, disablePush } from '../firebase/messagingService';
+import toast from 'react-hot-toast';
 
 const AuthContext = createContext(null);
 
@@ -35,6 +37,16 @@ export const AuthProvider = ({ children }) => {
           setLoading(false);
         });
         setUnsubscribeProfile(() => unsub);
+
+        // Init push notifications (non-blocking, silent fail if VAPID not set)
+        if (!user.isAnonymous) {
+          initPushNotifications(user.uid).catch(() => {});
+          // Show in-app toast for foreground messages
+          onForegroundMessage((payload) => {
+            const { title, body } = payload.notification || {};
+            if (title || body) toast(body || title, { icon: '🔔', duration: 4000 });
+          });
+        }
       } else {
         setUserProfile(null);
         setLoading(false);

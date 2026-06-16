@@ -103,6 +103,22 @@ service firebase.storage {
         && maxSize(25);
     }
 
+    // ─── Story videos & music ─────────────────────────────────────────────────
+
+    match /story-videos/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidVideoType()
+        && maxSize(50);
+    }
+
+    match /story-music/{uid}/{filename} {
+      allow read: if isAuth();
+      allow write: if isAuth() && request.auth.uid == uid
+        && isValidAudioType()
+        && maxSize(10);
+    }
+
     // ─── Deny everything else ────────────────────────────────────────────────
 
     match /{allPaths=**} {
