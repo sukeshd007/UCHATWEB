@@ -236,6 +236,7 @@ export default function ChatPage() {
     const msgText = text.trim();
     setText('');
     setReplyTo(null);
+    setSending(true);
 
     const tempId = `temp_${Date.now()}`;
     const optimisticMsg = normalizeMsg({
@@ -258,15 +259,19 @@ export default function ChatPage() {
         text: msgText, type: 'text',
         replyTo: replyTo ? { id: replyTo.id, text: replyTo.text, senderId: replyTo.senderId } : null
       });
+      // Remove the optimistic message — the real-time subscription will add the real one
       setMessages(prev => prev.filter(m => m.id !== tempId));
-    } catch {
+    } catch (err) {
       if (isOffline) {
         await addToOutbox({ chatId, uid, text: msgText, type: 'text' });
+        // Keep optimistic message visible as pending
         toast('Saved offline — will send when connected');
       } else {
-        toast.error('Failed to send');
+        toast.error('Failed to send message');
         setMessages(prev => prev.filter(m => m.id !== tempId));
       }
+    } finally {
+      setSending(false);
     }
   };
 

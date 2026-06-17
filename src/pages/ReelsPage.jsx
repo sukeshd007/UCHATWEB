@@ -448,8 +448,12 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
             src={reel.videoUrl}
             loop muted={muted} playsInline
             preload={isActive ? 'auto' : 'metadata'}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer', pointerEvents: 'none' }}
+          />
+          {/* Transparent tap/swipe overlay — sits above the video so swipe reaches container */}
+          <div
             onClick={handleTap}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
+            style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: 'pointer' }}
           />
           {/* Timeline scrubber — like Instagram Reels */}
           {isActive && (

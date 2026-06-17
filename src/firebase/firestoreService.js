@@ -137,18 +137,15 @@ export const followUser = async (currentUid, targetUid) => {
     updateDoc(doc(db, 'users', currentUid), { followingCount: increment(1) }),
   ]);
 
-  // Step 3: Check if target already follows back (for "Follow Back" label)
-  const alreadyFollowsBack = await isFollowing(targetUid, currentUid);
-
-  // Step 4: Notify target
-  await createNotification({
-    recipientId: targetUid,
-    senderId: currentUid,
-    type: 'follow',
-    message: alreadyFollowsBack ? 'followed you back' : 'started following you',
-  });
-
-  return { followedBack: alreadyFollowsBack };
+  // Step 3: Notify target (non-blocking — don't fail the follow if notification fails)
+  isFollowing(targetUid, currentUid).then(alreadyFollowsBack => {
+    createNotification({
+      recipientId: targetUid,
+      senderId: currentUid,
+      type: 'follow',
+      message: alreadyFollowsBack ? 'followed you back' : 'started following you',
+    }).catch(() => {});
+  }).catch(() => {});
 };
 
 export const unfollowUser = async (currentUid, targetUid) => {
@@ -728,18 +725,34 @@ export const setUserRole = async (uid, role) => {
 };
 
 export const getPlatformStats = async () => {
-  const [usersSnap, postsSnap, reelsSnap, reportsSnap] = await Promise.all([
-    getCountFromServer(collection(db, 'users')),
-    getCountFromServer(collection(db, 'posts')),
-    getCountFromServer(collection(db, 'reels')),
-    getCountFromServer(query(collection(db, 'reports'), where('status', '==', 'pending')))
-  ]);
-  return {
-    totalUsers: usersSnap.data().count,
-    totalPosts: postsSnap.data().count,
-    totalReels: reelsSnap.data().count,
-    pendingReports: reportsSnap.data().count
-  };
+  try {
+    const [usersSnap, postsSnap, reelsSnap, reportsSnap] = await Promise.all([
+      getCountFromServer(collection(db, 'users')),
+      getCountFromServer(collection(db, 'posts')),
+      getCountFromServer(collection(db, 'reels')),
+      getCountFromServer(query(collection(db, 'reports'), where('status', '==', 'pending')))
+    ]);
+    return {
+      totalUsers: usersSnap.data().count,
+      totalPosts: postsSnap.data().count,
+      totalReels: reelsSnap.data().count,
+      pendingReports: reportsSnap.data().count
+    };
+  } catch {
+    // Fallback: getDocs with a high limit
+    const [usersSnap, postsSnap, reelsSnap, reportsSnap] = await Promise.all([
+      getDocs(query(collection(db, 'users'), limit(1000))),
+      getDocs(query(collection(db, 'posts'), limit(1000))),
+      getDocs(query(collection(db, 'reels'), limit(1000))),
+      getDocs(query(collection(db, 'reports'), where('status', '==', 'pending'), limit(1000)))
+    ]);
+    return {
+      totalUsers: usersSnap.size,
+      totalPosts: postsSnap.size,
+      totalReels: reelsSnap.size,
+      pendingReports: reportsSnap.size
+    };
+  }
 };
 
 export const getAllReports = async (status = 'pending') => {
@@ -858,6 +871,23 @@ export const getExploreReels = async (lastDoc = null, limitCount = 10) => {
   ];
   if (lastDoc) constraints.push(startAfter(lastDoc));
   const q = query(...constraints);
+  const snap = await getDocs(q);
+  return {
+    reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount,
+  };
+};
+
+// Get reels by a specific user (for profile page)
+export const getUserReels = async (uid, lastDoc = null, limitCount = 12) => {
+  let q = query(
+    collection(db, 'reels'),
+    where('authorId', '==', uid),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
   const snap = await getDocs(q);
   return {
     reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),

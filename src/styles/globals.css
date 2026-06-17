@@ -246,12 +246,16 @@ svg { flex-shrink: 0; }
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+  /* Fix: ensure the content area actually has height so scroll works */
+  min-height: 0;
+  height: calc(100dvh - var(--nav-h-top) - var(--nav-h-bottom));
 }
 
 /* Full screen pages (reels, chat) — no nav offset */
 .main-content.fullscreen {
   margin-top: 0;
   margin-bottom: 0;
+  height: 100dvh;
 }
 
 .bottom-nav-slot {
