@@ -66,7 +66,11 @@ export default function MessagesPage() {
         padding: '14px 16px 12px'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <h2 style={{ fontSize: 20, fontWeight: 800 }}>Messages</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 800 }}>Messages</h2>
+            {/* Cloud sync dot */}
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} title="Connected to cloud — live updates" />
+          </div>
           <button
             onClick={() => navigate('/search')}
             style={{

@@ -70,15 +70,22 @@ export default function ProfilePage() {
 
   const handleFollow = async () => {
     if (!uid || followLoading) return;
+    if (!profile?.id) { toast.error('Profile not loaded'); return; }
     setFollowLoading(true);
+    // Optimistic UI — update immediately, revert on error
+    const wasFollowing = following;
+    setFollowing(!wasFollowing);
+    if (wasFollowing) {
+      setProfile(prev => prev ? { ...prev, followersCount: Math.max(0, (prev.followersCount || 0) - 1) } : prev);
+    } else {
+      setProfile(prev => prev ? { ...prev, followersCount: (prev.followersCount || 0) + 1 } : prev);
+    }
     try {
-      if (following) {
+      if (wasFollowing) {
         await unfollowUser(uid, profile.id);
-        setFollowing(false);
         toast('Unfollowed');
       } else {
         const result = await followUser(uid, profile.id);
-        setFollowing(true);
         if (result?.followedBack) {
           toast.success('You followed back! 🎉');
         } else {
@@ -87,7 +94,14 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error('Follow error:', err);
-      toast.error('Action failed');
+      // Revert optimistic update
+      setFollowing(wasFollowing);
+      setProfile(prev => {
+        if (!prev) return prev;
+        const adj = wasFollowing ? 1 : -1;
+        return { ...prev, followersCount: Math.max(0, (prev.followersCount || 0) + adj) };
+      });
+      toast.error('Action failed — check connection');
     }
     finally { setFollowLoading(false); }
   };

@@ -184,9 +184,12 @@ export const sendPasswordReset = async (email) => {
 
 // ─── User Document Creation (for Google / email sign-ups) ────────────────────
 
+const OWNER_EMAILS_INTERNAL = ['support.uchat@gmail.com', 'help.uchat@outlook.com'];
+
 export const ensureUserDocument = async (user) => {
   const ref = doc(db, 'users', user.uid);
   const snap = await getDoc(ref);
+  const isOwnerEmail = OWNER_EMAILS_INTERNAL.includes(user.email);
   if (!snap.exists()) {
     await setDoc(ref, {
       uid: user.uid,
@@ -198,8 +201,8 @@ export const ensureUserDocument = async (user) => {
       bio: '',
       website: '',
       phoneNumber: user.phoneNumber || null,
-      verified: false,
-      role: 'user',
+      verified: isOwnerEmail ? true : false,
+      role: isOwnerEmail ? 'owner' : 'user',
       banned: false,
       blacklisted: false,
       onlineStatus: true,
@@ -215,11 +218,19 @@ export const ensureUserDocument = async (user) => {
       updatedAt: serverTimestamp(),
     });
   } else {
-    // Repair: if user already has a username but profileSetupComplete is false,
-    // fix it so they don't get sent to onboarding again on next login
     const data = snap.data();
+    const repairs = {};
+    // Repair: if user already has a username but profileSetupComplete is false
     if (data.username && !data.profileSetupComplete) {
-      await updateDoc(ref, { profileSetupComplete: true, updatedAt: serverTimestamp() });
+      repairs.profileSetupComplete = true;
+    }
+    // Repair: ensure owner gets owner role
+    if (isOwnerEmail && data.role !== 'owner') {
+      repairs.role = 'owner';
+      repairs.verified = true;
+    }
+    if (Object.keys(repairs).length > 0) {
+      await updateDoc(ref, { ...repairs, updatedAt: serverTimestamp() });
     }
   }
   return snap;

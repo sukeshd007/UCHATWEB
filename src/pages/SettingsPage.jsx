@@ -16,7 +16,7 @@ import { db } from '../firebase/config';
 import toast from 'react-hot-toast';
 
 export default function SettingsPage() {
-  const { userProfile, uid, isGuest } = useAuth();
+  const { userProfile, uid, isGuest, isOwner, isAdmin } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
 
@@ -213,9 +213,9 @@ export default function SettingsPage() {
       icon: Shield,
       color: '#10B981',
     },
-    ...(userProfile?.role === 'admin' || userProfile?.role === 'owner' ? [{
+    ...(isAdmin ? [{
       key: 'admin',
-      title: userProfile?.role === 'owner' ? '👑 Owner Panel' : '🛡 Admin Panel',
+      title: isOwner ? '👑 Owner Panel' : '🛡 Admin Panel',
       icon: Star,
       color: '#F59E0B',
     }] : []),
@@ -469,9 +469,9 @@ export default function SettingsPage() {
         </SettingSection>
 
         {/* Admin / Owner Panel — only visible to admins/owners */}
-        {(userProfile?.role === 'admin' || userProfile?.role === 'owner') && (
+        {isAdmin && (
           <SettingSection
-            title={userProfile?.role === 'owner' ? '👑 Owner Panel' : '🛡 Admin Panel'}
+            title={isOwner ? '👑 Owner Panel' : '🛡 Admin Panel'}
             icon={<Star size={18} />}
             iconBg="#F59E0B"
             expanded={activeSection === 'admin'}
@@ -484,7 +484,7 @@ export default function SettingsPage() {
               <SettingItem label="Review Feedback" icon={<MessageSquare size={16} />} onClick={() => navigate('/admin?tab=feedback')} />
               <SettingItem label="Reported Content" icon={<Shield size={16} />} onClick={() => navigate('/admin?tab=reports')} />
               <SettingItem label="🚫 Ban a User for 1 Hour" icon={<Shield size={16} />} onClick={() => navigate('/admin?tab=users&action=ban1h')} last={!( userProfile?.role === 'owner')} />
-              {userProfile?.role === 'owner' && (
+              {isOwner && (
                 <>
                   <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', margin: '14px 0 10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Owner Controls</div>
                   <SettingItem label="Promote User to Admin" icon={<Star size={16} />} onClick={() => toast('Owner: use the Admin page to promote users')} />

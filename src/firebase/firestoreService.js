@@ -800,3 +800,68 @@ export const subscribeToIncomingCalls = (uid, callback) => {
     callback(calls.length > 0 ? calls[0] : null);
   });
 };
+
+// ─── ADMIN: VIEW ALL MESSAGES (soft-deleted included) ────────────────────────
+export const getAllMessagesAdmin = async (chatId, limitCount = 200) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    orderBy('createdAt', 'asc'),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+// Subscribe to all messages including deleted — for admin view
+export const subscribeToAllMessagesAdmin = (chatId, callback) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    orderBy('createdAt', 'asc'),
+    limit(500)
+  );
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  });
+};
+
+// Get all chats for admin view
+export const getAllChatsAdmin = async (limitCount = 100) => {
+  const q = query(
+    collection(db, 'chats'),
+    orderBy('lastMessageTime', 'desc'),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+// Real-time subscribe to all chats (admin)
+export const subscribeToAllChatsAdmin = (callback) => {
+  const q = query(
+    collection(db, 'chats'),
+    orderBy('lastMessageTime', 'desc'),
+    limit(100)
+  );
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  });
+};
+
+// Get reels for explore (includes all public reels)
+export const getExploreReels = async (lastDoc = null, limitCount = 10) => {
+  const constraints = [
+    collection(db, 'reels'),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount),
+  ];
+  if (lastDoc) constraints.push(startAfter(lastDoc));
+  const q = query(...constraints);
+  const snap = await getDocs(q);
+  return {
+    reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount,
+  };
+};

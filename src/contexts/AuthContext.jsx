@@ -83,7 +83,11 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  const isOwner = OWNER_EMAILS.includes(userProfile?.email) || OWNER_USERNAMES.includes(userProfile?.username);
+  // Owner check: matches email in profile, firebase auth email, or username
+  const isOwner = 
+    OWNER_EMAILS.includes(userProfile?.email) || 
+    OWNER_EMAILS.includes(firebaseUser?.email) ||
+    OWNER_USERNAMES.includes(userProfile?.username);
   const isAdmin = userProfile?.role === 'admin' || isOwner;
   const isProfileComplete = userProfile?.profileSetupComplete === true;
   const banUntil = userProfile?.banUntil;

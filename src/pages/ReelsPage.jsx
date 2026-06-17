@@ -418,17 +418,65 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
     } catch {}
   };
 
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onMeta = () => setDuration(v.duration || 0);
+    const onTime = () => { if (!scrubbing && v.duration) setProgress(v.currentTime / v.duration); };
+    v.addEventListener('loadedmetadata', onMeta);
+    v.addEventListener('timeupdate', onTime);
+    return () => { v.removeEventListener('loadedmetadata', onMeta); v.removeEventListener('timeupdate', onTime); };
+  }, [scrubbing]);
+
+  const handleScrub = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const v = videoRef.current;
+    if (v && v.duration) { v.currentTime = ratio * v.duration; setProgress(ratio); }
+  };
+
   return (
     <div style={{ ...style, userSelect: 'none' }}>
       {reel.videoUrl ? (
-        <video
-          ref={videoRef}
-          src={reel.videoUrl}
-          loop muted={muted} playsInline
-          preload={isActive ? 'auto' : 'none'}
-          onClick={handleTap}
-          style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
-        />
+        <>
+          <video
+            ref={videoRef}
+            src={reel.videoUrl}
+            loop muted={muted} playsInline
+            preload={isActive ? 'auto' : 'metadata'}
+            onClick={handleTap}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }}
+          />
+          {/* Timeline scrubber — like Instagram Reels */}
+          {isActive && (
+            <div
+              style={{ position: 'absolute', bottom: 80, left: 16, right: 80, height: 3, cursor: 'pointer', zIndex: 5 }}
+              onMouseDown={e => { setScrubbing(true); handleScrub(e); }}
+              onMouseMove={e => { if (scrubbing) handleScrub(e); }}
+              onMouseUp={() => setScrubbing(false)}
+              onTouchStart={e => { setScrubbing(true); handleScrub(e.touches[0]); }}
+              onTouchMove={e => { if (scrubbing) handleScrub(e.touches[0]); }}
+              onTouchEnd={() => setScrubbing(false)}
+            >
+              <div style={{ width: '100%', height: '100%', background: 'rgba(255,255,255,0.25)', borderRadius: 2, position: 'relative' }}>
+                <div style={{ width: `${progress * 100}%`, height: '100%', background: 'white', borderRadius: 2, transition: scrubbing ? 'none' : 'width 0.1s' }} />
+                {/* Scrub handle */}
+                <div style={{
+                  position: 'absolute', top: '50%', left: `${progress * 100}%`,
+                  transform: 'translate(-50%, -50%)',
+                  width: scrubbing ? 14 : 0, height: scrubbing ? 14 : 0,
+                  borderRadius: '50%', background: 'white',
+                  boxShadow: '0 0 6px rgba(0,0,0,0.5)',
+                  transition: 'width 0.15s, height 0.15s',
+                }} />
+              </div>
+            </div>
+          )}
+        </>
       ) : (
         // Local file not available on this device
         <div style={{ width: '100%', height: '100%', background: '#111', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'rgba(255,255,255,0.5)' }}>
@@ -463,7 +511,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
       <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '65%', background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 100%)', pointerEvents: 'none' }} />
 
       {/* Bottom info */}
-      <div style={{ position: 'absolute', bottom: 90, left: 16, right: 80, color: 'white' }}>
+      <div style={{ position: 'absolute', bottom: 100, left: 16, right: 80, color: 'white' }}>
         <Link to={`/profile/${reel.author?.username}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, color: 'white', textDecoration: 'none' }}>
           <Avatar src={reel.author?.profilePhoto} name={reel.author?.displayName} size={36} verified={reel.author?.verified} />
           <div>

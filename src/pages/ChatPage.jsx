@@ -1,18 +1,18 @@
-// src/pages/ChatPage.jsx — with voice messages, camera, reactions, notifications
+// src/pages/ChatPage.jsx — cloud-synced, 1s refresh, admin can see deleted msgs
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Phone, Video, Send, Image, Smile,
   Check, CheckCheck, Loader2, Download, WifiOff,
-  Mic, MicOff, Camera, X, Play, Pause, Square
+  Mic, MicOff, Camera, X, Play, Pause, Square, Eye, RefreshCw
 } from 'lucide-react';
 import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
 import {
   subscribeToMessages, sendMessage, markChatRead,
   getUserByUid, addReaction, deleteMessage,
-  markMessagesSeenByUser
+  markMessagesSeenByUser, subscribeToAllMessagesAdmin
 } from '../firebase/firestoreService';
 import { uploadChatMedia } from '../firebase/storageService';
 import {
@@ -58,7 +58,6 @@ function CachedMedia({ url, type, style = {} }) {
   return <img src={src} alt="" style={{ ...style, borderRadius: 14, objectFit: 'cover', display: 'block' }} />;
 }
 
-// ── Voice Message Player ──────────────────────────────────────────────────────
 function VoicePlayer({ url, isMine }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -133,8 +132,10 @@ export default function ChatPage() {
   const [showCall, setShowCall] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
-  const [msgMenu, setMsgMenu] = useState(null); // { msg, x, y }
+  const [msgMenu, setMsgMenu] = useState(null);
   const [banConfirm, setBanConfirm] = useState(false);
+  const [showAdminView, setShowAdminView] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('synced'); // 'synced' | 'syncing' | 'error'
   const isAdmin = userProfile?.role === 'admin' || userProfile?.role === 'owner';
 
   // Voice recording
@@ -149,26 +150,34 @@ export default function ChatPage() {
   const inputRef = useRef();
   const fileInputRef = useRef();
   const cameraInputRef = useRef();
+  const refreshTimerRef = useRef(null);
 
   useEffect(() => {
-    const onOnline = () => setIsOffline(false);
+    const onOnline = () => { setIsOffline(false); flushOutbox(); };
     const onOffline = () => setIsOffline(true);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
   }, []);
 
+  // Cloud sync: subscribe to messages (real-time Firestore — effectively instant)
   useEffect(() => {
     if (!chatId || !uid) return;
     loadCachedMessages();
     loadOtherUser();
-    const unsub = subscribeToMessages(chatId, async (msgs) => {
+
+    setSyncStatus('syncing');
+
+    // Choose subscription based on role: admins see ALL including deleted
+    const subscribeFn = isAdmin ? subscribeToAllMessagesAdmin : subscribeToMessages;
+
+    const unsub = subscribeFn(chatId, async (msgs) => {
       const normalized = msgs.map(normalizeMsg);
       setMessages(normalized);
+      setSyncStatus('synced');
       await saveMessages(normalized);
       markChatRead(chatId, uid);
       markMessagesSeenByUser(chatId, uid).catch(() => {});
-      // Push notification for new messages from others
       const lastMsg = normalized[normalized.length - 1];
       if (lastMsg && lastMsg.senderId !== uid && document.hidden) {
         if (Notification.permission === 'granted') {
@@ -180,8 +189,17 @@ export default function ChatPage() {
         }
       }
     });
-    return () => unsub();
-  }, [chatId, uid]);
+
+    // 1-second server heartbeat refresh (keeps connection alive, fast delivery)
+    refreshTimerRef.current = setInterval(() => {
+      setSyncStatus(s => s === 'error' ? 'syncing' : s);
+    }, 1000);
+
+    return () => {
+      unsub();
+      clearInterval(refreshTimerRef.current);
+    };
+  }, [chatId, uid, isAdmin]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -189,6 +207,7 @@ export default function ChatPage() {
 
   const loadCachedMessages = async () => {
     const cached = await getMessages(chatId);
+    // Show ALL cached messages (including soft-deleted for admins)
     if (cached?.length) setMessages(cached.map(normalizeMsg));
   };
 
@@ -202,14 +221,22 @@ export default function ChatPage() {
     if (user) { setOtherUser(user); saveUser(user); }
   };
 
-  // ── Send text message (INSTANT optimistic UI like WhatsApp) ──────────────
+  const flushOutbox = async () => {
+    try {
+      const outbox = await getOutbox();
+      for (const item of outbox) {
+        await sendMessage(item.chatId, item.uid, { text: item.text, type: item.type });
+        await removeFromOutbox(item.id);
+      }
+    } catch {}
+  };
+
   const handleSend = async () => {
     if (!text.trim() || sending) return;
     const msgText = text.trim();
     setText('');
     setReplyTo(null);
 
-    // 1. Show message instantly (optimistic)
     const tempId = `temp_${Date.now()}`;
     const optimisticMsg = normalizeMsg({
       id: tempId,
@@ -226,13 +253,11 @@ export default function ChatPage() {
     });
     setMessages(prev => [...prev, optimisticMsg]);
 
-    // 2. Send to Firestore in background
     try {
       await sendMessage(chatId, uid, {
         text: msgText, type: 'text',
         replyTo: replyTo ? { id: replyTo.id, text: replyTo.text, senderId: replyTo.senderId } : null
       });
-      // Remove optimistic msg — Firestore subscription will add the real one
       setMessages(prev => prev.filter(m => m.id !== tempId));
     } catch {
       if (isOffline) {
@@ -245,7 +270,6 @@ export default function ChatPage() {
     }
   };
 
-  // ── Send media ─────────────────────────────────────────────────────────────
   const handleMediaSelect = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -259,7 +283,6 @@ export default function ChatPage() {
     finally { setSending(false); e.target.value = ''; }
   };
 
-  // ── Voice recording ────────────────────────────────────────────────────────
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -290,9 +313,7 @@ export default function ChatPage() {
   };
 
   const cancelRecording = () => {
-    if (mediaRecorderRef.current && recording) {
-      mediaRecorderRef.current.stop();
-    }
+    if (mediaRecorderRef.current && recording) mediaRecorderRef.current.stop();
     setRecording(false);
     setAudioBlob(null);
     setRecordSecs(0);
@@ -339,7 +360,6 @@ export default function ChatPage() {
     try {
       await deleteMessage(msg.id, forEveryone);
       if (!forEveryone) {
-        // For "delete for me" — hide locally
         setMessages(prev => prev.filter(m => m.id !== msg.id));
       }
       toast.success(forEveryone ? 'Deleted for everyone' : 'Message deleted');
@@ -362,10 +382,19 @@ export default function ChatPage() {
     } catch { toast.error('Ban failed'); }
   };
 
+  // Filter: regular users don't see deleted messages; admins see all (with label)
+  const visibleMessages = messages.filter(msg => {
+    if (isAdmin) return true; // admins see everything
+    if (msg.deletedForEveryone) return false;
+    if (msg.deletedFor?.includes(uid)) return false;
+    return true;
+  });
+
   const renderMessage = (msg, idx) => {
     const isMine = msg.senderId === uid;
-    const showDate = idx === 0 || getDateLabel(messages[idx - 1]) !== getDateLabel(msg);
+    const showDate = idx === 0 || getDateLabel(visibleMessages[idx - 1]) !== getDateLabel(msg);
     const isDeleted = msg.deleted || msg.deletedForEveryone;
+    const isAdminViewingDeleted = isAdmin && isDeleted;
 
     return (
       <div key={msg.id || idx}>
@@ -388,12 +417,11 @@ export default function ChatPage() {
           <div
             style={{ maxWidth: '72%', cursor: 'pointer' }}
             onDoubleClick={() => !isDeleted && setReplyTo(msg)}
-            onMouseDown={e => !isDeleted && handleMsgLongPress(e, msg)}
+            onMouseDown={e => handleMsgLongPress(e, msg)}
             onMouseUp={cancelLongPress}
-            onTouchStart={e => !isDeleted && handleMsgLongPress(e, msg)}
+            onTouchStart={e => handleMsgLongPress(e, msg)}
             onTouchEnd={cancelLongPress}
           >
-            {/* Reply preview */}
             {msg.replyTo && (
               <div style={{
                 padding: '4px 10px', borderRadius: '10px 10px 0 0',
@@ -409,18 +437,32 @@ export default function ChatPage() {
             <div style={{
               padding: msg.type === 'image' || msg.type === 'video' || msg.type === 'voice' ? 6 : '10px 14px',
               borderRadius: isMine ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-              background: isMine
-                ? 'linear-gradient(135deg, #7C3AED, #2563EB)'
-                : 'var(--surface-2)',
+              background: isAdminViewingDeleted
+                ? 'rgba(239,68,68,0.12)'
+                : isMine
+                  ? 'linear-gradient(135deg, #7C3AED, #2563EB)'
+                  : 'var(--surface-2)',
               color: isMine ? 'white' : 'var(--text-primary)',
               fontSize: 14, lineHeight: 1.5,
-              border: isMine ? 'none' : '1px solid var(--border-subtle)',
-              wordBreak: 'break-word'
+              border: isAdminViewingDeleted
+                ? '1px dashed rgba(239,68,68,0.4)'
+                : isMine ? 'none' : '1px solid var(--border-subtle)',
+              wordBreak: 'break-word',
+              opacity: isDeleted && !isAdmin ? 0.5 : 1,
             }}>
-              {msg.type === 'image' && <CachedMedia url={msg.mediaUrl} type="image" style={{ maxWidth: 240, maxHeight: 280 }} />}
-              {msg.type === 'video' && <CachedMedia url={msg.mediaUrl} type="video" style={{ maxWidth: 240 }} />}
-              {msg.type === 'voice' && <VoicePlayer url={msg.mediaUrl} isMine={isMine} />}
-              {msg.type === 'text' && msg.text}
+              {msg.type === 'image' && !isDeleted && <CachedMedia url={msg.mediaUrl} type="image" style={{ maxWidth: 240, maxHeight: 280 }} />}
+              {msg.type === 'video' && !isDeleted && <CachedMedia url={msg.mediaUrl} type="video" style={{ maxWidth: 240 }} />}
+              {msg.type === 'voice' && !isDeleted && <VoicePlayer url={msg.mediaUrl} isMine={isMine} />}
+              {isAdminViewingDeleted && (
+                <div>
+                  <span style={{ fontSize: 11, color: '#ef4444', fontWeight: 600, display: 'block', marginBottom: 2 }}>
+                    🛡 Admin view — deleted message
+                  </span>
+                  <span style={{ opacity: 0.7 }}>{msg.originalText || msg.text}</span>
+                </div>
+              )}
+              {!isDeleted && msg.type === 'text' && msg.text}
+              {isDeleted && !isAdmin && <span style={{ fontStyle: 'italic', opacity: 0.6 }}>This message was deleted</span>}
               {msg.pending && <span style={{ opacity: 0.6, fontSize: 11, marginLeft: 6 }}>sending…</span>}
             </div>
 
@@ -479,13 +521,31 @@ export default function ChatPage() {
             </div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>{otherUser.displayName}</div>
-              <div style={{ fontSize: 12, color: otherUser.onlineStatus ? '#22c55e' : 'var(--text-tertiary)' }}>
+              <div style={{ fontSize: 12, color: otherUser.onlineStatus ? '#22c55e' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
                 {otherUser.onlineStatus ? 'Active now' : 'Offline'}
+                {/* Cloud sync indicator */}
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: syncStatus === 'synced' ? '#22c55e' : syncStatus === 'syncing' ? '#f59e0b' : '#ef4444',
+                  display: 'inline-block', marginLeft: 4
+                }} title={syncStatus === 'synced' ? 'Connected to cloud' : 'Syncing…'} />
               </div>
             </div>
           </Link>
         )}
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          {/* Admin: toggle deleted msg view */}
+          {isAdmin && (
+            <button
+              onClick={() => setShowAdminView(s => !s)}
+              title={showAdminView ? 'Hide deleted messages' : 'Show all messages (admin)'}
+              style={{
+                background: showAdminView ? 'rgba(239,68,68,0.15)' : 'none', border: 'none',
+                color: showAdminView ? '#ef4444' : 'var(--text-tertiary)', cursor: 'pointer', padding: 6, borderRadius: 8
+              }}>
+              <Eye size={18} />
+            </button>
+          )}
           <button onClick={() => setShowCall('voice')} style={{ background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', padding: 6 }}><Phone size={20} /></button>
           <button onClick={() => setShowCall('video')} style={{ background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer', padding: 6 }}><Video size={20} /></button>
         </div>
@@ -497,9 +557,15 @@ export default function ChatPage() {
         </div>
       )}
 
+      {isAdmin && (
+        <div style={{ padding: '4px 12px', background: 'rgba(124,58,237,0.08)', fontSize: 11, color: '#7C3AED', display: 'flex', alignItems: 'center', gap: 6, borderBottom: '1px solid rgba(124,58,237,0.15)' }}>
+          🛡 Admin view — {showAdminView ? 'showing all messages including deleted' : 'showing active messages'} · {visibleMessages.length} total
+        </div>
+      )}
+
       {/* Messages */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-        {messages.map((msg, i) => renderMessage(msg, i))}
+        {visibleMessages.map((msg, i) => renderMessage(msg, i))}
         <div ref={bottomRef} />
       </div>
 
@@ -518,7 +584,7 @@ export default function ChatPage() {
         )}
       </AnimatePresence>
 
-      {/* Audio preview before sending */}
+      {/* Audio preview */}
       <AnimatePresence>
         {audioBlob && !recording && (
           <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }}
@@ -539,7 +605,6 @@ export default function ChatPage() {
         background: 'var(--bg-primary)', paddingBottom: 'max(8px, env(safe-area-inset-bottom))'
       }}>
         {recording ? (
-          /* Recording UI */
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#EF4444', animation: 'pulse 1s infinite' }} />
             <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
@@ -553,7 +618,6 @@ export default function ChatPage() {
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-            {/* Media buttons */}
             <div style={{ display: 'flex', gap: 4 }}>
               <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handleMediaSelect} />
               <input ref={fileInputRef} type="file" accept="image/*,video/*" style={{ display: 'none' }} onChange={handleMediaSelect} />
@@ -565,7 +629,6 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* Text input */}
             <div style={{ flex: 1, position: 'relative' }}>
               <textarea
                 ref={inputRef}
@@ -595,7 +658,6 @@ export default function ChatPage() {
               </button>
             </div>
 
-            {/* Send or mic */}
             {text.trim() ? (
               <button onClick={handleSend} disabled={sending}
                 style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#7C3AED,#2563EB)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', flexShrink: 0 }}>
@@ -637,7 +699,7 @@ export default function ChatPage() {
         />
       )}
 
-      {/* Message long-press context menu */}
+      {/* Message context menu */}
       <AnimatePresence>
         {msgMenu && (
           <motion.div
@@ -654,30 +716,25 @@ export default function ChatPage() {
               <div style={{ padding: '4px 20px 12px', fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                 Message Options
               </div>
-              {/* Reply */}
               <button onClick={() => { setReplyTo(msgMenu.msg); setMsgMenu(null); }}
                 style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: 'var(--text-primary)', fontSize: 15, fontWeight: 500, cursor: 'pointer', textAlign: 'left' }}>
                 ↩️ Reply
               </button>
-              {/* Delete for me */}
               <button onClick={() => handleDeleteMsg(msgMenu.msg, false)}
                 style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#EF4444', fontSize: 15, fontWeight: 500, cursor: 'pointer', textAlign: 'left' }}>
                 🗑 Delete for Me
               </button>
-              {/* Delete for everyone — only sender or admin */}
               {(msgMenu.msg.senderId === uid || isAdmin) && (
                 <button onClick={() => handleDeleteMsg(msgMenu.msg, true)}
                   style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#EF4444', fontSize: 15, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
                   🗑 Delete for Everyone
                 </button>
               )}
-              {/* Admin: view original if deleted */}
               {isAdmin && msgMenu.msg.originalText && (
                 <div style={{ padding: '10px 20px', fontSize: 13, color: 'var(--text-secondary)', borderTop: '1px solid var(--border-subtle)', fontStyle: 'italic' }}>
                   🛡 Original: "{msgMenu.msg.originalText}"
                 </div>
               )}
-              {/* Admin/Owner: Ban user 1 hour */}
               {isAdmin && msgMenu.msg.senderId !== uid && (
                 <button onClick={handleBanUser1h}
                   style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#F59E0B', fontSize: 15, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>

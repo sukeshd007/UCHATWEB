@@ -2,9 +2,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, X, TrendingUp } from 'lucide-react';
+import { Search, X, TrendingUp, Play, Volume2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { searchUsers, getFeedPosts, followUser, unfollowUser, isFollowing } from '../firebase/firestoreService';
+import { searchUsers, getFeedPosts, getReels, getUserByUid, followUser, unfollowUser, isFollowing } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
 import toast from 'react-hot-toast';
 
@@ -17,11 +17,19 @@ export default function SearchPage() {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState('top'); // top | people | posts
+  const [reels, setReels] = useState([]);
   const debounceRef = useRef();
 
   useEffect(() => {
-    // Load explore posts on mount
-    getFeedPosts(null, 18).then(r => setPosts(r.posts));
+    // Load explore posts and reels on mount
+    getFeedPosts(null, 12).then(r => setPosts(r.posts));
+    getReels(null, 12).then(async r => {
+      const enriched = await Promise.all(r.reels.map(async reel => {
+        const author = await getUserByUid(reel.authorId).catch(() => null);
+        return { ...reel, author };
+      }));
+      setReels(enriched);
+    }).catch(() => {});
   }, []);
 
   const handleSearch = useCallback((val) => {
@@ -117,14 +125,36 @@ export default function SearchPage() {
               </div>
             </div>
 
-            {/* Explore grid */}
+            {/* Explore tabs */}
             <div style={{ padding: '8px 0' }}>
-              <h3 style={{ fontSize: 16, fontWeight: 700, padding: '8px 16px 12px' }}>Explore</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3, padding: '0 3px' }}>
-                {posts.map((post, i) => (
-                  <ExplorePost key={post.id} post={post} featured={i === 0 || i === 7} />
+              <div style={{ display: 'flex', gap: 0, padding: '0 16px 12px', borderBottom: '1px solid var(--border-subtle)', marginBottom: 8 }}>
+                {[['posts', '📸 Posts'], ['reels', '🎬 Reels']].map(([key, label]) => (
+                  <button key={key} onClick={() => setTab(key)} style={{
+                    padding: '8px 18px', fontSize: 13, fontWeight: 700,
+                    background: tab === key ? 'var(--brand-gradient)' : 'var(--surface-2)',
+                    color: tab === key ? 'white' : 'var(--text-secondary)',
+                    borderRadius: key === 'posts' ? '10px 0 0 10px' : '0 10px 10px 0',
+                    border: '1.5px solid var(--border-default)',
+                    borderLeft: key === 'reels' ? 'none' : undefined,
+                    cursor: 'pointer', transition: 'all 0.15s'
+                  }}>{label}</button>
                 ))}
               </div>
+              {tab === 'posts' ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3, padding: '0 3px' }}>
+                  {posts.map((post, i) => (
+                    <ExplorePost key={post.id} post={post} featured={i === 0 || i === 7} />
+                  ))}
+                  {posts.length === 0 && <p style={{ gridColumn: 'span 3', textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: 14 }}>No posts yet</p>}
+                </div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3, padding: '0 3px' }}>
+                  {reels.map(reel => (
+                    <ExploreReel key={reel.id} reel={reel} />
+                  ))}
+                  {reels.length === 0 && <p style={{ gridColumn: 'span 3', textAlign: 'center', padding: '40px 0', color: 'var(--text-tertiary)', fontSize: 14 }}>No reels yet</p>}
+                </div>
+              )}
             </div>
           </motion.div>
         ) : (
@@ -270,3 +300,48 @@ const UserRowSkeleton = () => (
     </div>
   </div>
 );
+
+const ExploreReel = ({ reel }) => {
+  const videoRef = useRef(null);
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Link
+      to={`/reels/${reel.id}`}
+      style={{
+        display: 'block', overflow: 'hidden',
+        background: 'var(--surface-2)',
+        aspectRatio: '9/16',
+        position: 'relative',
+        borderRadius: 4,
+      }}
+      onMouseEnter={() => { setHovered(true); videoRef.current?.play?.(); }}
+      onMouseLeave={() => { setHovered(false); if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; } }}
+    >
+      {/* Thumbnail (first frame) via video */}
+      {reel.videoUrl && (
+        <video
+          ref={videoRef}
+          src={reel.videoUrl}
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      )}
+      {/* Play icon overlay */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: hovered ? 'rgba(0,0,0,0.1)' : 'rgba(0,0,0,0.25)',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'flex-start', justifyContent: 'flex-end',
+        padding: '8px 6px', transition: 'background 0.2s'
+      }}>
+        <Play size={16} fill="white" color="white" style={{ marginBottom: 2 }} />
+        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.85)', fontWeight: 700 }}>
+          @{reel.author?.username || ''}
+        </span>
+      </div>
+    </Link>
+  );
+};

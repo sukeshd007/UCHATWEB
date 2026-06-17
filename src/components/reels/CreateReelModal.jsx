@@ -3,7 +3,7 @@
 // Everyone else uploads via Cloudinary/Firebase Storage as normal.
 import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { X, Video, Loader2, HardDrive, Cloud } from 'lucide-react';
+import { X, Video, Loader2, HardDrive, Cloud, Image, Scissors } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { OWNER_USERNAMES } from '../../contexts/AuthContext';
 import { createReel, createLocalReel } from '../../firebase/firestoreService';
@@ -24,6 +24,12 @@ export default function CreateReelModal({ onClose }) {
   const [step, setStep] = useState(0);
   // Owner mode: 'cloud' uses normal upload, 'local' stores blob URL in Firestore
   const [uploadMode, setUploadMode] = useState('cloud');
+  const [thumbnailTime, setThumbnailTime] = useState(0);
+  const [customThumbnail, setCustomThumbnail] = useState(null); // File
+  const [thumbnailPreview, setThumbnailPreview] = useState(null); // URL
+  const [videoDuration, setVideoDuration] = useState(0);
+  const previewVideoRef = useRef();
+  const thumbFileRef = useRef();
   const fileRef = useRef();
 
   const handleFile = (e) => {
@@ -36,6 +42,8 @@ export default function CreateReelModal({ onClose }) {
     vid.onloadedmetadata = () => {
       setFile(f);
       setPreview(url);
+      setVideoDuration(vid.duration || 0);
+      setThumbnailTime(0);
       setStep(1);
     };
     vid.onerror = () => { toast.error('Could not read video file'); URL.revokeObjectURL(url); };
@@ -64,6 +72,7 @@ export default function CreateReelModal({ onClose }) {
           videoPath: result.path,
           title: title.trim(),
           caption: caption.trim(),
+          thumbnailTime: thumbnailTime,
         });
         toast.success('Reel shared!');
       }
@@ -142,8 +151,54 @@ export default function CreateReelModal({ onClose }) {
         {step === 1 && (
           <div>
             {preview && (
-              <div style={{ position: 'relative', background: '#000', aspectRatio: '9/16', maxHeight: 260, overflow: 'hidden' }}>
-                <video src={preview} controls muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <div style={{ position: 'relative', background: '#000', overflow: 'hidden' }}>
+                {/* Video preview with timeline */}
+                <video
+                  ref={previewVideoRef}
+                  src={preview}
+                  muted
+                  playsInline
+                  style={{ width: '100%', maxHeight: 200, objectFit: 'cover', display: 'block' }}
+                  onLoadedMetadata={e => setVideoDuration(e.target.duration || 0)}
+                />
+                {/* Timeline for thumbnail selection */}
+                {videoDuration > 0 && (
+                  <div style={{ padding: '8px 12px', background: 'rgba(0,0,0,0.7)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)', fontWeight: 600 }}>📸 Thumbnail frame</span>
+                      <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>{Math.round(thumbnailTime)}s / {Math.round(videoDuration)}s</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={videoDuration}
+                      step={0.1}
+                      value={thumbnailTime}
+                      onChange={e => {
+                        const t = parseFloat(e.target.value);
+                        setThumbnailTime(t);
+                        if (previewVideoRef.current) previewVideoRef.current.currentTime = t;
+                      }}
+                      style={{ width: '100%', accentColor: '#7C3AED', cursor: 'pointer' }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                      <button
+                        onClick={() => thumbFileRef.current?.click()}
+                        style={{ fontSize: 11, padding: '4px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.25)', color: 'white', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <Image size={11} /> Custom cover
+                      </button>
+                      {thumbnailPreview && (
+                        <span style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 4 }}>✓ Custom thumbnail set</span>
+                      )}
+                    </div>
+                    <input ref={thumbFileRef} type="file" accept="image/*" style={{ display: 'none' }}
+                      onChange={e => {
+                        const img = e.target.files?.[0];
+                        if (img) { setCustomThumbnail(img); setThumbnailPreview(URL.createObjectURL(img)); }
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             )}
             <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>

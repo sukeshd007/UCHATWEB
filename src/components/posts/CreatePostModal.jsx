@@ -34,7 +34,7 @@ export default function CreatePostModal({ onClose }) {
   const handleDrop = (e) => {
     e.preventDefault();
     const dropped = Array.from(e.dataTransfer.files).filter(f =>
-      f.type.startsWith('image/') || f.type.startsWith('video/')
+      f.type.startsWith('image/')
     ).slice(0, 10);
     if (!dropped.length) return;
     setFiles(dropped);
@@ -64,7 +64,7 @@ export default function CreatePostModal({ onClose }) {
 
       await createPost(uid, {
         mediaUrls,
-        mediaType: files[0]?.type?.startsWith('video/') ? 'video' : 'image',
+        mediaType: 'image',
         caption: caption.trim(),
         location: location.trim(),
         hashtags: tags,
@@ -178,10 +178,10 @@ export default function CreatePostModal({ onClose }) {
               </div>
               <div>
                 <p style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>
-                  Drag photos & videos here
+                  Drag photos here
                 </p>
                 <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>
-                  Up to 10 files · Max 10MB per image, 100MB per video
+                  Up to 10 photos · Max 10MB per image · Videos → use Reels
                 </p>
               </div>
               <button style={{
@@ -195,7 +195,7 @@ export default function CreatePostModal({ onClose }) {
                 ref={fileRef}
                 type="file"
                 multiple
-                accept="image/*,video/*"
+                accept="image/*"
                 style={{ display: 'none' }}
                 onChange={handleFiles}
               />
