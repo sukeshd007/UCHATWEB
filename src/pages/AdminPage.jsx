@@ -349,7 +349,15 @@ export default function AdminPage() {
                   {u.banned ? (
                     <AdminBtn onClick={() => handleUnban(u)} color="#22c55e" icon={<Unlock size={13} />}>Unban</AdminBtn>
                   ) : (
-                    <AdminBtn onClick={() => setBanModal(u)} color="#EF4444" icon={<Ban size={13} />}>Ban</AdminBtn>
+                    <>
+                      <AdminBtn onClick={() => setBanModal(u)} color="#EF4444" icon={<Ban size={13} />}>Ban</AdminBtn>
+                      <AdminBtn onClick={async () => {
+                        const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                        await banUser(u.uid, until);
+                        toast.success(`${u.username} banned for 1 hour`);
+                        handleSearchUsers();
+                      }} color="#F97316" icon={<Clock size={13} />}>Ban 1h</AdminBtn>
+                    </>
                   )}
                   {isOwner && (
                     <>

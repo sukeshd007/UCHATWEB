@@ -38,7 +38,13 @@ export const AuthProvider = ({ children }) => {
         }
 
         const unsub = subscribeToUser(user.uid, (profile) => {
-          setUserProfile(profile);
+          setUserProfile(prev => {
+            // Show "you are verified!" toast when verified status just turned on
+            if (profile.verified && prev && !prev.verified) {
+              toast.success('🎉 You are successfully verified!', { duration: 5000, icon: '✅' });
+            }
+            return profile;
+          });
           setLoading(false);
         });
         setUnsubscribeProfile(() => unsub);

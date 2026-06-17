@@ -175,8 +175,8 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/chats/$(request.resource.data.chatId)).data.participants;
       allow update: if isAuth() && (
         resource.data.senderId == request.auth.uid ||
-        // Reactions from chat participants
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy'])
+        // Reactions, seen status from chat participants
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy', 'seenAt', 'deliveredTo'])
       );
       allow delete: if false; // Soft delete only
     }
@@ -258,9 +258,16 @@ service cloud.firestore {
 
     match /feedback/{docId} {
       allow read: if isAdmin();
-      allow create: if isAuth()
-        && request.resource.data.uid == (request.auth.uid != null ? request.auth.uid : 'guest');
+      // Allow any user (including unauthenticated guests) to submit feedback
+      allow create: if true;
       allow update, delete: if isAdmin();
+    }
+
+    // ─── Post Views (one per user per post) ───────────────────────────────────
+    match /postViews/{viewId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
     }
 
     // ─── Deny all else ────────────────────────────────────────────────────────

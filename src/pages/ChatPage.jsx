@@ -11,7 +11,8 @@ import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
 import {
   subscribeToMessages, sendMessage, markChatRead,
-  getUserByUid, addReaction, deleteMessage
+  getUserByUid, addReaction, deleteMessage,
+  markMessagesSeenByUser
 } from '../firebase/firestoreService';
 import { uploadChatMedia } from '../firebase/storageService';
 import {
@@ -132,6 +133,9 @@ export default function ChatPage() {
   const [showCall, setShowCall] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
+  const [msgMenu, setMsgMenu] = useState(null); // { msg, x, y }
+  const [banConfirm, setBanConfirm] = useState(false);
+  const isAdmin = userProfile?.role === 'admin' || userProfile?.role === 'owner';
 
   // Voice recording
   const [recording, setRecording] = useState(false);
@@ -163,6 +167,7 @@ export default function ChatPage() {
       setMessages(normalized);
       await saveMessages(normalized);
       markChatRead(chatId, uid);
+      markMessagesSeenByUser(chatId, uid).catch(() => {});
       // Push notification for new messages from others
       const lastMsg = normalized[normalized.length - 1];
       if (lastMsg && lastMsg.senderId !== uid && document.hidden) {
@@ -197,22 +202,47 @@ export default function ChatPage() {
     if (user) { setOtherUser(user); saveUser(user); }
   };
 
-  // ── Send text message ──────────────────────────────────────────────────────
+  // ── Send text message (INSTANT optimistic UI like WhatsApp) ──────────────
   const handleSend = async () => {
     if (!text.trim() || sending) return;
     const msgText = text.trim();
     setText('');
-    setSending(true);
+    setReplyTo(null);
+
+    // 1. Show message instantly (optimistic)
+    const tempId = `temp_${Date.now()}`;
+    const optimisticMsg = normalizeMsg({
+      id: tempId,
+      chatId,
+      senderId: uid,
+      text: msgText,
+      type: 'text',
+      replyTo: replyTo ? { id: replyTo.id, text: replyTo.text, senderId: replyTo.senderId } : null,
+      pending: true,
+      seenBy: [uid],
+      deliveredTo: [uid],
+      seenAt: null,
+      createdAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 },
+    });
+    setMessages(prev => [...prev, optimisticMsg]);
+
+    // 2. Send to Firestore in background
     try {
       await sendMessage(chatId, uid, {
         text: msgText, type: 'text',
         replyTo: replyTo ? { id: replyTo.id, text: replyTo.text, senderId: replyTo.senderId } : null
       });
-      setReplyTo(null);
+      // Remove optimistic msg — Firestore subscription will add the real one
+      setMessages(prev => prev.filter(m => m.id !== tempId));
     } catch {
-      if (isOffline) { await addToOutbox({ chatId, uid, text: msgText, type: 'text' }); toast('Saved offline — will send when connected'); }
-      else toast.error('Failed to send');
-    } finally { setSending(false); }
+      if (isOffline) {
+        await addToOutbox({ chatId, uid, text: msgText, type: 'text' });
+        toast('Saved offline — will send when connected');
+      } else {
+        toast.error('Failed to send');
+        setMessages(prev => prev.filter(m => m.id !== tempId));
+      }
+    }
   };
 
   // ── Send media ─────────────────────────────────────────────────────────────
@@ -293,9 +323,49 @@ export default function ChatPage() {
     return format(date, 'MMM d, h:mm a');
   };
 
+  const longPressTimer = useRef(null);
+
+  const handleMsgLongPress = (e, msg) => {
+    e.preventDefault();
+    longPressTimer.current = setTimeout(() => {
+      setMsgMenu({ msg });
+    }, 400);
+  };
+
+  const cancelLongPress = () => clearTimeout(longPressTimer.current);
+
+  const handleDeleteMsg = async (msg, forEveryone) => {
+    setMsgMenu(null);
+    try {
+      await deleteMessage(msg.id, forEveryone);
+      if (!forEveryone) {
+        // For "delete for me" — hide locally
+        setMessages(prev => prev.filter(m => m.id !== msg.id));
+      }
+      toast.success(forEveryone ? 'Deleted for everyone' : 'Message deleted');
+    } catch { toast.error('Delete failed'); }
+  };
+
+  const handleBanUser1h = async () => {
+    setMsgMenu(null);
+    setBanConfirm(true);
+  };
+
+  const confirmBan = async () => {
+    setBanConfirm(false);
+    if (!otherUser?.id) return;
+    const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    try {
+      const { banUser } = await import('../firebase/firestoreService');
+      await banUser(otherUser.id, until);
+      toast.success(`${otherUser.displayName} banned for 1 hour`);
+    } catch { toast.error('Ban failed'); }
+  };
+
   const renderMessage = (msg, idx) => {
     const isMine = msg.senderId === uid;
     const showDate = idx === 0 || getDateLabel(messages[idx - 1]) !== getDateLabel(msg);
+    const isDeleted = msg.deleted || msg.deletedForEveryone;
 
     return (
       <div key={msg.id || idx}>
@@ -317,7 +387,11 @@ export default function ChatPage() {
           )}
           <div
             style={{ maxWidth: '72%', cursor: 'pointer' }}
-            onDoubleClick={() => setReplyTo(msg)}
+            onDoubleClick={() => !isDeleted && setReplyTo(msg)}
+            onMouseDown={e => !isDeleted && handleMsgLongPress(e, msg)}
+            onMouseUp={cancelLongPress}
+            onTouchStart={e => !isDeleted && handleMsgLongPress(e, msg)}
+            onTouchEnd={cancelLongPress}
           >
             {/* Reply preview */}
             {msg.replyTo && (
@@ -356,11 +430,27 @@ export default function ChatPage() {
               marginTop: 3, padding: '0 2px'
             }}>
               <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{getTimestamp(msg)}</span>
-              {isMine && (
-                msg.read
-                  ? <CheckCheck size={13} style={{ color: '#0EA5E9' }} />
-                  : <Check size={13} style={{ color: 'var(--text-tertiary)' }} />
-              )}
+              {isMine && (() => {
+                const seenBy = msg.seenBy || [];
+                const deliveredTo = msg.deliveredTo || [];
+                const otherUid = chatId.split('_').find(id => id !== uid);
+                const seen = otherUid && seenBy.includes(otherUid);
+                const delivered = otherUid && (deliveredTo.includes(otherUid) || seenBy.includes(otherUid));
+                
+                if (seen) {
+                  const seenTime = msg.seenAt?.seconds
+                    ? format(new Date(msg.seenAt.seconds * 1000), 'h:mm a')
+                    : null;
+                  return (
+                    <span title={seenTime ? `Seen at ${seenTime}` : 'Seen'} style={{ display:'flex', alignItems:'center', gap:2 }}>
+                      <CheckCheck size={13} style={{ color: '#7C3AED' }} />
+                      {seenTime && <span style={{ fontSize:10, color:'#7C3AED' }}>{seenTime}</span>}
+                    </span>
+                  );
+                }
+                if (delivered) return <CheckCheck size={13} style={{ color: 'var(--text-tertiary)' }} />;
+                return <Check size={13} style={{ color: 'var(--text-tertiary)' }} />;
+              })()}
             </div>
           </div>
         </motion.div>
@@ -546,6 +636,87 @@ export default function ChatPage() {
           onClose={() => setShowCall(null)}
         />
       )}
+
+      {/* Message long-press context menu */}
+      <AnimatePresence>
+        {msgMenu && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setMsgMenu(null)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 300, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+          >
+            <motion.div
+              initial={{ y: 60 }} animate={{ y: 0 }} exit={{ y: 60 }}
+              onClick={e => e.stopPropagation()}
+              style={{ width: '100%', maxWidth: 500, background: 'var(--bg-primary)', borderRadius: '20px 20px 0 0', padding: '12px 0 32px' }}
+            >
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: 'var(--border-default)', margin: '0 auto 12px' }} />
+              <div style={{ padding: '4px 20px 12px', fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Message Options
+              </div>
+              {/* Reply */}
+              <button onClick={() => { setReplyTo(msgMenu.msg); setMsgMenu(null); }}
+                style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: 'var(--text-primary)', fontSize: 15, fontWeight: 500, cursor: 'pointer', textAlign: 'left' }}>
+                ↩️ Reply
+              </button>
+              {/* Delete for me */}
+              <button onClick={() => handleDeleteMsg(msgMenu.msg, false)}
+                style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#EF4444', fontSize: 15, fontWeight: 500, cursor: 'pointer', textAlign: 'left' }}>
+                🗑 Delete for Me
+              </button>
+              {/* Delete for everyone — only sender or admin */}
+              {(msgMenu.msg.senderId === uid || isAdmin) && (
+                <button onClick={() => handleDeleteMsg(msgMenu.msg, true)}
+                  style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#EF4444', fontSize: 15, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                  🗑 Delete for Everyone
+                </button>
+              )}
+              {/* Admin: view original if deleted */}
+              {isAdmin && msgMenu.msg.originalText && (
+                <div style={{ padding: '10px 20px', fontSize: 13, color: 'var(--text-secondary)', borderTop: '1px solid var(--border-subtle)', fontStyle: 'italic' }}>
+                  🛡 Original: "{msgMenu.msg.originalText}"
+                </div>
+              )}
+              {/* Admin/Owner: Ban user 1 hour */}
+              {isAdmin && msgMenu.msg.senderId !== uid && (
+                <button onClick={handleBanUser1h}
+                  style={{ width: '100%', padding: '14px 20px', background: 'none', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: 14, color: '#F59E0B', fontSize: 15, fontWeight: 700, cursor: 'pointer', textAlign: 'left' }}>
+                  🚫 Ban User for 1 Hour
+                </button>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Ban confirm */}
+      <AnimatePresence>
+        {banConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}
+          >
+            <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} exit={{ scale: 0.9 }}
+              style={{ background: 'var(--bg-primary)', borderRadius: 20, padding: 24, maxWidth: 320, width: '100%', textAlign: 'center' }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>🚫</div>
+              <h3 style={{ margin: '0 0 8px', fontSize: 18, fontWeight: 700 }}>Ban for 1 Hour?</h3>
+              <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20 }}>
+                {otherUser?.displayName} will be unable to use UChat for 1 hour.
+              </p>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button onClick={() => setBanConfirm(false)}
+                  style={{ flex: 1, padding: '12px', borderRadius: 12, border: '1.5px solid var(--border-default)', background: 'transparent', color: 'var(--text-primary)', fontWeight: 600, cursor: 'pointer', fontSize: 14 }}>
+                  Cancel
+                </button>
+                <button onClick={confirmBan}
+                  style={{ flex: 1, padding: '12px', borderRadius: 12, border: 'none', background: '#EF4444', color: 'white', fontWeight: 700, cursor: 'pointer', fontSize: 14 }}>
+                  Ban 1 Hour
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }`}</style>
     </div>

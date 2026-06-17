@@ -41,6 +41,44 @@ export default function SettingsPage() {
   const [feedbackText, setFeedbackText] = useState('');
   const [feedbackType, setFeedbackType] = useState('feedback');
 
+  // Permissions
+  const [micPermission, setMicPermission] = useState('prompt');
+  const [camPermission, setCamPermission] = useState('prompt');
+  const [notifPermission, setNotifPermission] = useState(Notification.permission);
+
+  useEffect(() => {
+    // Check current permission states
+    if (navigator.permissions) {
+      navigator.permissions.query({ name: 'microphone' }).then(r => setMicPermission(r.state)).catch(() => {});
+      navigator.permissions.query({ name: 'camera' }).then(r => setCamPermission(r.state)).catch(() => {});
+    }
+  }, []);
+
+  const requestMic = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setMicPermission('granted');
+      toast.success('Microphone access granted');
+    } catch { setMicPermission('denied'); toast.error('Microphone permission denied'); }
+  };
+
+  const requestCam = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(t => t.stop());
+      setCamPermission('granted');
+      toast.success('Camera access granted');
+    } catch { setCamPermission('denied'); toast.error('Camera permission denied'); }
+  };
+
+  const requestNotif = async () => {
+    const result = await Notification.requestPermission();
+    setNotifPermission(result);
+    if (result === 'granted') toast.success('Notifications enabled');
+    else toast.error('Notification permission denied');
+  };
+
   // Load saved prefs
   useEffect(() => {
     const saved = localStorage.getItem('uchat_notif_prefs');
@@ -83,23 +121,31 @@ export default function SettingsPage() {
 
   const submitFeedback = async () => {
     if (!feedbackText.trim()) { toast.error('Please write something'); return; }
+    const payload = {
+      type: feedbackType,
+      text: feedbackText,
+      uid: uid || 'guest',
+      username: userProfile?.username || 'guest',
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+    };
     try {
       const { addDoc, collection } = await import('firebase/firestore');
-      const actualUid = uid || 'guest';
       await addDoc(collection(db, 'feedback'), {
-        type: feedbackType,
-        text: feedbackText,
-        uid: actualUid,
-        username: userProfile?.username || 'guest',
+        ...payload,
         createdAt: serverTimestamp(),
-        status: 'pending',
       });
-      toast.success('Feedback sent! Thank you 🙏');
+      toast.success('Sent! Thank you 🙏');
       setFeedbackText('');
       setShowFeedbackModal(false);
     } catch (err) {
-      console.error('Feedback error:', err);
-      toast.error('Failed to send feedback');
+      // Fallback: save locally so it's not lost
+      const existing = JSON.parse(localStorage.getItem('uchat_pending_feedback') || '[]');
+      existing.push(payload);
+      localStorage.setItem('uchat_pending_feedback', JSON.stringify(existing));
+      toast.success('Saved locally — will sync when ready 🙏');
+      setFeedbackText('');
+      setShowFeedbackModal(false);
     }
   };
 
@@ -161,6 +207,18 @@ export default function SettingsPage() {
       color: '#8B5CF6',
       action: () => { setFeedbackType('feedback'); setShowFeedbackModal(true); }
     },
+    {
+      key: 'permissions',
+      title: 'App Permissions',
+      icon: Shield,
+      color: '#10B981',
+    },
+    ...(userProfile?.role === 'admin' || userProfile?.role === 'owner' ? [{
+      key: 'admin',
+      title: userProfile?.role === 'owner' ? '👑 Owner Panel' : '🛡 Admin Panel',
+      icon: Star,
+      color: '#F59E0B',
+    }] : []),
     {
       key: 'about',
       title: 'About UChat',
@@ -354,6 +412,89 @@ export default function SettingsPage() {
           <div style={{ flex: 1, fontWeight: 600, fontSize: 15 }}>Send Feedback</div>
           <ChevronRight size={16} style={{ color: 'var(--text-tertiary)' }} />
         </div>
+
+        {/* App Permissions */}
+        <SettingSection
+          title="App Permissions"
+          icon={<Shield size={18} />}
+          iconBg="#10B981"
+          expanded={activeSection === 'permissions'}
+          onToggle={() => setActiveSection(activeSection === 'permissions' ? null : 'permissions')}
+        >
+          {/* Microphone */}
+          <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid var(--border-subtle)' }}>
+            <span style={{ fontSize: 18 }}>🎤</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Microphone</div>
+              <div style={{ fontSize: 12, color: micPermission === 'granted' ? '#10B981' : micPermission === 'denied' ? '#EF4444' : 'var(--text-tertiary)' }}>
+                {micPermission === 'granted' ? 'Allowed' : micPermission === 'denied' ? 'Blocked — change in browser settings' : 'Not requested yet'}
+              </div>
+            </div>
+            {micPermission !== 'granted' && micPermission !== 'denied' && (
+              <button onClick={requestMic} style={{ padding: '6px 14px', borderRadius: 10, background: '#10B981', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Allow</button>
+            )}
+            {micPermission === 'granted' && <span style={{ color: '#10B981', fontWeight: 700 }}>✓</span>}
+            {micPermission === 'denied' && <span style={{ color: '#EF4444', fontWeight: 700 }}>✕</span>}
+          </div>
+          {/* Camera */}
+          <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid var(--border-subtle)' }}>
+            <span style={{ fontSize: 18 }}>📷</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Camera</div>
+              <div style={{ fontSize: 12, color: camPermission === 'granted' ? '#10B981' : camPermission === 'denied' ? '#EF4444' : 'var(--text-tertiary)' }}>
+                {camPermission === 'granted' ? 'Allowed' : camPermission === 'denied' ? 'Blocked — change in browser settings' : 'Not requested yet'}
+              </div>
+            </div>
+            {camPermission !== 'granted' && camPermission !== 'denied' && (
+              <button onClick={requestCam} style={{ padding: '6px 14px', borderRadius: 10, background: '#10B981', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Allow</button>
+            )}
+            {camPermission === 'granted' && <span style={{ color: '#10B981', fontWeight: 700 }}>✓</span>}
+            {camPermission === 'denied' && <span style={{ color: '#EF4444', fontWeight: 700 }}>✕</span>}
+          </div>
+          {/* Notifications */}
+          <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 18 }}>🔔</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>Push Notifications</div>
+              <div style={{ fontSize: 12, color: notifPermission === 'granted' ? '#10B981' : notifPermission === 'denied' ? '#EF4444' : 'var(--text-tertiary)' }}>
+                {notifPermission === 'granted' ? 'Allowed' : notifPermission === 'denied' ? 'Blocked — change in browser settings' : 'Not requested yet'}
+              </div>
+            </div>
+            {notifPermission !== 'granted' && notifPermission !== 'denied' && (
+              <button onClick={requestNotif} style={{ padding: '6px 14px', borderRadius: 10, background: '#7C3AED', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 13 }}>Allow</button>
+            )}
+            {notifPermission === 'granted' && <span style={{ color: '#10B981', fontWeight: 700 }}>✓</span>}
+            {notifPermission === 'denied' && <span style={{ color: '#EF4444', fontWeight: 700 }}>✕</span>}
+          </div>
+        </SettingSection>
+
+        {/* Admin / Owner Panel — only visible to admins/owners */}
+        {(userProfile?.role === 'admin' || userProfile?.role === 'owner') && (
+          <SettingSection
+            title={userProfile?.role === 'owner' ? '👑 Owner Panel' : '🛡 Admin Panel'}
+            icon={<Star size={18} />}
+            iconBg="#F59E0B"
+            expanded={activeSection === 'admin'}
+            onToggle={() => setActiveSection(activeSection === 'admin' ? null : 'admin')}
+          >
+            <div style={{ padding: '12px 16px' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.05em' }}>User Management</div>
+              <SettingItem label="View All Users" icon={<Eye size={16} />} onClick={() => navigate('/admin')} />
+              <SettingItem label="Pending Verifications" icon={<UserCheck size={16} />} onClick={() => navigate('/admin?tab=verifications')} />
+              <SettingItem label="Review Feedback" icon={<MessageSquare size={16} />} onClick={() => navigate('/admin?tab=feedback')} />
+              <SettingItem label="Reported Content" icon={<Shield size={16} />} onClick={() => navigate('/admin?tab=reports')} />
+              <SettingItem label="🚫 Ban a User for 1 Hour" icon={<Shield size={16} />} onClick={() => navigate('/admin?tab=users&action=ban1h')} last={!( userProfile?.role === 'owner')} />
+              {userProfile?.role === 'owner' && (
+                <>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)', margin: '14px 0 10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Owner Controls</div>
+                  <SettingItem label="Promote User to Admin" icon={<Star size={16} />} onClick={() => toast('Owner: use the Admin page to promote users')} />
+                  <SettingItem label="Platform Analytics" icon={<Eye size={16} />} onClick={() => navigate('/admin?tab=analytics')} />
+                  <SettingItem label="🚫 Ban a User for 1 Hour" icon={<Shield size={16} />} onClick={() => navigate('/admin?tab=users&action=ban1h')} last />
+                </>
+              )}
+            </div>
+          </SettingSection>
+        )}
 
         {/* About */}
         <SettingSection

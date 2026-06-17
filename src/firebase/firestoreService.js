@@ -538,10 +538,12 @@ export const sendMessage = async (chatId, uid, messageData) => {
     senderId: uid,
     ...messageData,
     reactions: {},
-    replyTo: null,
+    replyTo: messageData.replyTo || null,
     deleted: false,
     createdAt: serverTimestamp(),
-    seenBy: [uid]
+    seenBy: [uid],
+    deliveredTo: [uid],
+    seenAt: null,
   });
   
   // Update chat's last message
@@ -581,18 +583,66 @@ export const markChatRead = async (chatId, uid) => {
   });
 };
 
+// Mark all unread messages in this chat as seen by uid (double purple tick)
+export const markMessagesSeenByUser = async (chatId, uid) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    where('senderId', '!=', uid)
+  );
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  const now = new Date();
+  snap.docs.forEach(d => {
+    const data = d.data();
+    const seenBy = data.seenBy || [];
+    if (!seenBy.includes(uid)) {
+      batch.update(d.ref, {
+        seenBy: arrayUnion(uid),
+        seenAt: serverTimestamp(),
+      });
+    }
+  });
+  await batch.commit().catch(() => {});
+};
+
+// ─── POST VIEWS & SHARES ──────────────────────────────────────────────────────
+
+export const incrementPostViews = async (uid, postId) => {
+  const viewRef = doc(db, 'postViews', `${uid}_${postId}`);
+  const snap = await getDoc(viewRef).catch(() => null);
+  if (snap && snap.exists()) return;
+  await setDoc(viewRef, { userId: uid, postId, viewedAt: serverTimestamp() }).catch(() => {});
+  await updateDoc(doc(db, 'posts', postId), { viewsCount: increment(1) }).catch(() => {});
+};
+
+export const sharePost = async (postId) => {
+  await updateDoc(doc(db, 'posts', postId), { sharesCount: increment(1) }).catch(() => {});
+};
+
 export const addReaction = async (messageId, uid, emoji) => {
   await updateDoc(doc(db, 'messages', messageId), {
     [`reactions.${uid}`]: emoji
   });
 };
 
-export const deleteMessage = async (messageId) => {
-  await updateDoc(doc(db, 'messages', messageId), {
-    deleted: true,
-    text: 'This message was deleted',
-    deletedAt: serverTimestamp()
-  });
+export const deleteMessage = async (messageId, deleteForEveryone = false) => {
+  if (deleteForEveryone) {
+    // Soft delete — visible to admin on server, hidden from both users
+    await updateDoc(doc(db, 'messages', messageId), {
+      deleted: true,
+      deletedForEveryone: true,
+      originalText: (await getDoc(doc(db, 'messages', messageId))).data()?.text || '',
+      text: 'This message was deleted',
+      deletedAt: serverTimestamp(),
+    });
+  } else {
+    // Delete for me only — stored as array of uids who deleted it
+    await updateDoc(doc(db, 'messages', messageId), {
+      deletedFor: arrayUnion((await getDoc(doc(db, 'messages', messageId))).data()?.senderId || ''),
+      deletedAt: serverTimestamp(),
+    });
+  }
 };
 
 // ─── NOTES ────────────────────────────────────────────────────────────────────

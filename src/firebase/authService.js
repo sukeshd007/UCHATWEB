@@ -214,6 +214,13 @@ export const ensureUserDocument = async (user) => {
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+  } else {
+    // Repair: if user already has a username but profileSetupComplete is false,
+    // fix it so they don't get sent to onboarding again on next login
+    const data = snap.data();
+    if (data.username && !data.profileSetupComplete) {
+      await updateDoc(ref, { profileSetupComplete: true, updatedAt: serverTimestamp() });
+    }
   }
   return snap;
 };

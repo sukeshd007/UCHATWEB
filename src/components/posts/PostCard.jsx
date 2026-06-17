@@ -1,17 +1,16 @@
-// src/components/posts/PostCard.jsx
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, MessageCircle, Send, Bookmark,
-  MoreHorizontal, ChevronLeft, ChevronRight, Play
+  MoreHorizontal, ChevronLeft, ChevronRight, Play, Eye, Share2
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   likePost, unlikePost, isPostLiked,
   savePost, unsavePost, isPostSaved,
-  getUserByUid
+  getUserByUid, sharePost, incrementPostViews
 } from '../../firebase/firestoreService';
 import Avatar from '../common/Avatar';
 import PostMenu from './PostMenu';
@@ -25,11 +24,16 @@ export default function PostCard({ post }) {
   const [liked, setLiked] = useState(false);
   const [saved, setSaved] = useState(false);
   const [likesCount, setLikesCount] = useState(post.likesCount || 0);
+  const [commentsCount, setCommentsCount] = useState(post.commentsCount || 0);
+  const [savesCount, setSavesCount] = useState(post.savesCount || 0);
+  const [sharesCount, setSharesCount] = useState(post.sharesCount || 0);
+  const [viewsCount, setViewsCount] = useState(post.viewsCount || 0);
   const [showComments, setShowComments] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [mediaIndex, setMediaIndex] = useState(0);
   const [heartAnim, setHeartAnim] = useState(false);
   const lastTapRef = useRef(0);
+  const viewedRef = useRef(false);
 
   const mediaUrls = post.mediaUrls || (post.mediaUrl ? [post.mediaUrl] : []);
   const hasMultiple = mediaUrls.length > 1;
@@ -39,6 +43,13 @@ export default function PostCard({ post }) {
     if (uid) {
       isPostLiked(uid, post.id).then(setLiked);
       isPostSaved(uid, post.id).then(setSaved);
+      // Count view once per mount
+      if (!viewedRef.current) {
+        viewedRef.current = true;
+        incrementPostViews(uid, post.id).then(() => {
+          setViewsCount(c => c + 1);
+        }).catch(() => {});
+      }
     }
   }, [post.id, uid]);
 
@@ -66,9 +77,23 @@ export default function PostCard({ post }) {
 
   const handleSave = async () => {
     if (!uid) { navigate('/auth'); return; }
+    const wasSaved = saved;
     setSaved(s => !s);
-    if (saved) await unsavePost(uid, post.id);
+    setSavesCount(c => wasSaved ? c - 1 : c + 1);
+    if (wasSaved) await unsavePost(uid, post.id);
     else await savePost(uid, post.id);
+  };
+
+  const handleShare = async () => {
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'UChat post', url: window.location.origin + `/post/${post.id}` });
+      } else {
+        await navigator.clipboard?.writeText(window.location.origin + `/post/${post.id}`);
+      }
+      await sharePost(post.id);
+      setSharesCount(c => c + 1);
+    } catch {}
   };
 
   const timestamp = post.createdAt?.toDate
@@ -215,7 +240,7 @@ export default function PostCard({ post }) {
             <MessageCircle size={22} />
           </button>
 
-          <button className={styles.actionBtn} aria-label="Share">
+          <button className={styles.actionBtn} aria-label="Share" onClick={handleShare}>
             <Send size={22} />
           </button>
         </div>
@@ -238,6 +263,16 @@ export default function PostCard({ post }) {
         <div className={styles.likes}>
           <Heart size={14} fill="var(--like-color)" color="var(--like-color)" />
           <span>{likesCount.toLocaleString()} {likesCount === 1 ? 'like' : 'likes'}</span>
+        </div>
+      )}
+
+      {/* Stats row: comments · saves · shares · views */}
+      {(commentsCount > 0 || savesCount > 0 || sharesCount > 0 || viewsCount > 0) && (
+        <div style={{ display:'flex', gap:14, padding:'2px 12px 4px', fontSize:12, color:'var(--text-tertiary)' }}>
+          {commentsCount > 0 && <span>💬 {commentsCount.toLocaleString()}</span>}
+          {savesCount > 0 && <span>🔖 {savesCount.toLocaleString()}</span>}
+          {sharesCount > 0 && <span>↗ {sharesCount.toLocaleString()}</span>}
+          {viewsCount > 0 && <span>👁 {viewsCount.toLocaleString()}</span>}
         </div>
       )}
 
