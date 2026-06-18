@@ -6,7 +6,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { getFeedPosts } from '../firebase/firestoreService';
 import PostCard from '../components/posts/PostCard';
 import StoryBar from '../components/feed/StoryBar';
-import HomeReels from '../components/feed/HomeReels';
 import SuggestedUsers from '../components/feed/SuggestedUsers';
 import PostSkeleton from '../components/posts/PostSkeleton';
 
@@ -44,7 +43,6 @@ export default function HomePage() {
     <div className="feed-layout">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
         <div style={{ padding: '12px 12px 8px' }}><StoryBar /></div>
-        <div style={{ padding: '0 12px 8px' }}><HomeReels /></div>
         {loading && !posts.length ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '0 12px' }}>
             {[1,2,3].map(i => <PostSkeleton key={i} />)}

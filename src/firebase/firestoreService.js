@@ -551,10 +551,14 @@ export const sendMessage = async (chatId, uid, messageData) => {
     ? chatSnap.data().participants || [uid]
     : [uid];
 
+  // Store receiverIds so recipients can query "messages sent to me"
+  const receiverIds = participants.filter(p => p !== uid);
+
   const ref = await addDoc(collection(db, 'messages'), {
     chatId,
     senderId: uid,
-    participants,        // ← stored for security rule checks
+    receiverId: receiverIds[0] || null,   // for DMs
+    participants,
     ...messageData,
     reactions: {},
     replyTo: messageData.replyTo || null,

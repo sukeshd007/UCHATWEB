@@ -242,11 +242,11 @@ svg { flex-shrink: 0; }
   flex: 1;
   margin-top: var(--nav-h-top);
   margin-bottom: var(--nav-h-bottom);
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  overscroll-behavior-y: contain;
-  /* Fix: ensure the content area actually has height so scroll works */
+  overscroll-behavior-y: auto;
+  touch-action: pan-y;
   min-height: 0;
   height: calc(100dvh - var(--nav-h-top) - var(--nav-h-bottom));
 }

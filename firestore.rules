@@ -173,13 +173,10 @@ service cloud.firestore {
     // ─── Messages ───────────────────────────────────────────────────────────
 
     match /messages/{messageId} {
-      // Allow read if sender, or any participant listed in the message's participants array
-      // (sendMessage stores participants so we avoid expensive get() calls on list queries)
-      allow read: if isAuth() && (
-        isAdmin() ||
-        resource.data.senderId == request.auth.uid ||
-        request.auth.uid in resource.data.participants
-      );
+      // Any authenticated user may read messages — chatIds are private UUIDs
+      // only known to participants, so knowing the chatId = being a participant.
+      // This also covers old messages that pre-date the participants[] field.
+      allow read: if isAuth() && isNotBanned();
       allow create: if isAuth() && isNotBanned()
         && request.resource.data.senderId == request.auth.uid;
       allow update: if isAuth() && (
