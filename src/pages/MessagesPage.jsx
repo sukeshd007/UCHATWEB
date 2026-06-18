@@ -7,6 +7,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
 import { getUserChats, getUserByUid, getActiveNotes, getFollowing } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 
 export default function MessagesPage() {
   const { uid, userProfile } = useAuth();

@@ -14,6 +14,7 @@ import {
 } from '../firebase/firestoreService';
 import { getLocalReelVideo } from '../utils/localDB';
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import CreateReelModal from '../components/reels/CreateReelModal';
 import CommentSheet from '../components/posts/CommentSheet';
 import toast from 'react-hot-toast';
@@ -520,7 +521,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
           <Avatar src={reel.author?.profilePhoto} name={reel.author?.displayName} size={36} verified={reel.author?.verified} />
           <div>
             <span style={{ fontSize: 14, fontWeight: 700 }}>@{reel.author?.username}</span>
-            {reel.author?.verified && <span style={{ fontSize: 11, color: '#60a5fa', marginLeft: 4 }}>✓</span>}
+            {reel.author?.verified && <VerifiedBadge size={14} style={{ marginLeft: 2 }} />}
           </div>
         </Link>
         {reel.title && <p style={{ fontSize: 14, fontWeight: 700, marginBottom: 3 }}>{reel.title}</p>}

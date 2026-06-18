@@ -169,22 +169,20 @@ export const isFollowing = async (currentUid, targetUid) => {
   return snap.exists();
 };
 
-export const getFollowers = async (uid, limitCount = 30) => {
+export const getFollowers = async (uid, limitCount = 50) => {
   const q = query(
     collection(db, 'followers'),
     where('userId', '==', uid),
-    orderBy('createdAt', 'desc'),
     limit(limitCount)
   );
   const snap = await getDocs(q);
   return snap.docs.map(d => d.data().followerId);
 };
 
-export const getFollowing = async (uid, limitCount = 30) => {
+export const getFollowing = async (uid, limitCount = 50) => {
   const q = query(
     collection(db, 'following'),
     where('userId', '==', uid),
-    orderBy('createdAt', 'desc'),
     limit(limitCount)
   );
   const snap = await getDocs(q);
@@ -529,15 +527,34 @@ export const getUserChats = (uid, callback) => {
     where('participants', 'array-contains', uid),
     orderBy('lastMessageTime', 'desc')
   );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-  });
+  return onSnapshot(q,
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    async (err) => {
+      console.error('getUserChats error (check indexes):', err.message);
+      // Fallback: query without ordering so new chats without lastMessageTime still show
+      try {
+        const fallbackQ = query(collection(db, 'chats'), where('participants', 'array-contains', uid));
+        const fallbackSnap = await getDocs(fallbackQ);
+        callback(fallbackSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) =>
+          ((b.lastMessageTime?.seconds || b.createdAt?.seconds || 0) - (a.lastMessageTime?.seconds || a.createdAt?.seconds || 0))
+        ));
+      } catch (e2) { console.error('getUserChats fallback also failed:', e2); }
+    }
+  );
 };
 
 export const sendMessage = async (chatId, uid, messageData) => {
+  // Get chat participants so we can store them on the message
+  // (avoids expensive get() in Firestore security rules for list queries)
+  const chatSnap = await getDoc(doc(db, 'chats', chatId));
+  const participants = chatSnap.exists()
+    ? chatSnap.data().participants || [uid]
+    : [uid];
+
   const ref = await addDoc(collection(db, 'messages'), {
     chatId,
     senderId: uid,
+    participants,        // ← stored for security rule checks
     ...messageData,
     reactions: {},
     replyTo: messageData.replyTo || null,
@@ -548,8 +565,7 @@ export const sendMessage = async (chatId, uid, messageData) => {
     seenAt: null,
   });
   
-  // Update chat's last message
-  const chatSnap = await getDoc(doc(db, 'chats', chatId));
+  // Update chat's last message (reuse already-fetched chatSnap)
   if (chatSnap.exists()) {
     const chat = chatSnap.data();
     const updates = {
@@ -584,9 +600,10 @@ export const subscribeToMessages = (chatId, callback) => {
     orderBy('createdAt', 'asc'),
     limit(100)
   );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-  });
+  return onSnapshot(q,
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => console.error('subscribeToMessages error (check indexes):', err.message)
+  );
 };
 
 export const markChatRead = async (chatId, uid) => {

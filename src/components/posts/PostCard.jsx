@@ -13,6 +13,7 @@ import {
   getUserByUid, sharePost, incrementPostViews
 } from '../../firebase/firestoreService';
 import Avatar from '../common/Avatar';
+import { VerifiedBadge } from '../common/VerifiedBadge';
 import PostMenu from './PostMenu';
 import CommentSheet from './CommentSheet';
 import styles from './PostCard.module.css';
@@ -115,9 +116,7 @@ export default function PostCard({ post }) {
           <div className={styles.authorInfo}>
             <span className={styles.displayName}>
               {author?.displayName}
-              {author?.verified && (
-                <span className={styles.verifiedBadge} title="Verified">✓</span>
-              )}
+              {author?.verified && <VerifiedBadge size={16} style={{ marginLeft: 2 }} />}
             </span>
             <span className={styles.meta}>
               @{author?.username}

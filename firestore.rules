@@ -173,23 +173,21 @@ service cloud.firestore {
     // ─── Messages ───────────────────────────────────────────────────────────
 
     match /messages/{messageId} {
+      // Allow read if sender, or any participant listed in the message's participants array
+      // (sendMessage stores participants so we avoid expensive get() calls on list queries)
       allow read: if isAuth() && (
         isAdmin() ||
-        request.auth.uid in get(/databases/$(database)/documents/chats/$(resource.data.chatId)).data.participants
+        resource.data.senderId == request.auth.uid ||
+        request.auth.uid in resource.data.participants
       );
       allow create: if isAuth() && isNotBanned()
-        && request.resource.data.senderId == request.auth.uid
-        && (
-          isAdmin() ||
-          request.auth.uid in get(/databases/$(database)/documents/chats/$(request.resource.data.chatId)).data.participants
-        );
+        && request.resource.data.senderId == request.auth.uid;
       allow update: if isAuth() && (
         resource.data.senderId == request.auth.uid ||
         isAdmin() ||
-        // Reactions, seen status from chat participants
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy', 'seenAt', 'deliveredTo'])
       );
-      allow delete: if false; // Soft delete only
+      allow delete: if false;
     }
 
     // ─── Notifications ───────────────────────────────────────────────────────

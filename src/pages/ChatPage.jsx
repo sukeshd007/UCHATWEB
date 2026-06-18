@@ -15,12 +15,7 @@ import {
   markMessagesSeenByUser, subscribeToAllMessagesAdmin
 } from '../firebase/firestoreService';
 import { uploadChatMedia } from '../firebase/storageService';
-import {
-  saveMessage, saveMessages, getMessages,
-  saveUser, getCachedUser,
-  saveMediaBlob, getOrFetchMedia,
-  addToOutbox, getOutbox, removeFromOutbox
-} from '../utils/localDB';
+// localDB removed — all data flows through Firestore real-time
 import Avatar from '../components/common/Avatar';
 import CallModal from '../components/calls/CallModal';
 import toast from 'react-hot-toast';
@@ -36,26 +31,9 @@ function normalizeMsg(msg) {
 }
 
 function CachedMedia({ url, type, style = {} }) {
-  const [src, setSrc] = useState(url);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let revoked = null;
-    setLoading(true);
-    getOrFetchMedia(url).then(resolved => {
-      if (resolved !== url) revoked = resolved;
-      setSrc(resolved);
-      setLoading(false);
-    }).catch(() => { setSrc(url); setLoading(false); });
-    return () => { if (revoked) URL.revokeObjectURL(revoked); };
-  }, [url]);
-  if (loading) return (
-    <div style={{ ...style, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-3)', borderRadius: 14 }}>
-      <Loader2 size={20} className="animate-spin" style={{ color: 'var(--text-tertiary)' }} />
-    </div>
-  );
   if (type === 'video')
-    return <video src={src} controls playsInline style={{ ...style, borderRadius: 14, display: 'block' }} />;
-  return <img src={src} alt="" style={{ ...style, borderRadius: 14, objectFit: 'cover', display: 'block' }} />;
+    return <video src={url} controls playsInline style={{ ...style, borderRadius: 14, display: 'block' }} />;
+  return <img src={url} alt="" style={{ ...style, borderRadius: 14, objectFit: 'cover', display: 'block' }} />;
 }
 
 function VoicePlayer({ url, isMine }) {
@@ -163,7 +141,6 @@ export default function ChatPage() {
   // Cloud sync: subscribe to messages (real-time Firestore — effectively instant)
   useEffect(() => {
     if (!chatId || !uid) return;
-    loadCachedMessages();
     loadOtherUser();
 
     setSyncStatus('syncing');
@@ -175,7 +152,6 @@ export default function ChatPage() {
       const normalized = msgs.map(normalizeMsg);
       setMessages(normalized);
       setSyncStatus('synced');
-      await saveMessages(normalized);
       markChatRead(chatId, uid);
       markMessagesSeenByUser(chatId, uid).catch(() => {});
       const lastMsg = normalized[normalized.length - 1];
@@ -205,30 +181,16 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const loadCachedMessages = async () => {
-    const cached = await getMessages(chatId);
-    // Show ALL cached messages (including soft-deleted for admins)
-    if (cached?.length) setMessages(cached.map(normalizeMsg));
-  };
-
   const loadOtherUser = async () => {
     const parts = chatId.split('_');
     const otherId = parts.find(id => id !== uid);
     if (!otherId) return;
-    const cached = await getCachedUser(otherId);
-    if (cached) setOtherUser(cached);
     const user = await getUserByUid(otherId);
-    if (user) { setOtherUser(user); saveUser(user); }
+    if (user) setOtherUser(user);
   };
 
   const flushOutbox = async () => {
-    try {
-      const outbox = await getOutbox();
-      for (const item of outbox) {
-        await sendMessage(item.chatId, item.uid, { text: item.text, type: item.type });
-        await removeFromOutbox(item.id);
-      }
-    } catch {}
+    // Outbox no longer stored locally — all messages go directly to Firestore
   };
 
   const handleSend = async () => {
@@ -262,14 +224,8 @@ export default function ChatPage() {
       // Remove the optimistic message — the real-time subscription will add the real one
       setMessages(prev => prev.filter(m => m.id !== tempId));
     } catch (err) {
-      if (isOffline) {
-        await addToOutbox({ chatId, uid, text: msgText, type: 'text' });
-        // Keep optimistic message visible as pending
-        toast('Saved offline — will send when connected');
-      } else {
-        toast.error('Failed to send message');
-        setMessages(prev => prev.filter(m => m.id !== tempId));
-      }
+      toast.error(isOffline ? 'No connection — please retry when online' : 'Failed to send message');
+      setMessages(prev => prev.filter(m => m.id !== tempId));
     } finally {
       setSending(false);
     }

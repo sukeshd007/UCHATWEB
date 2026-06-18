@@ -4,7 +4,6 @@ import { motion } from 'framer-motion';
 import { useInView } from 'react-intersection-observer';
 import { useAuth } from '../contexts/AuthContext';
 import { getFeedPosts } from '../firebase/firestoreService';
-import { savePosts, getCachedPosts } from '../utils/localDB';
 import PostCard from '../components/posts/PostCard';
 import StoryBar from '../components/feed/StoryBar';
 import HomeReels from '../components/feed/HomeReels';
@@ -20,17 +19,6 @@ export default function HomePage() {
   const lastDocRef = useRef(null);
   const { ref: sentinelRef, inView } = useInView({ threshold: 0.1 });
 
-  // Show cached posts instantly on mount
-  useEffect(() => {
-    getCachedPosts().then(cached => {
-      if (cached.length) {
-        const sorted = cached.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-        setPosts(sorted);
-        setLoading(false);
-      }
-    });
-  }, []);
-
   const loadPosts = useCallback(async (reset = false) => {
     if (!hasMore && !reset) return;
     if (reset) setLoading(true); else setLoadingMore(true);
@@ -43,7 +31,6 @@ export default function HomePage() {
         createdAt: p.createdAt?.seconds ? p.createdAt : { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 },
       }));
       setPosts(prev => reset ? normalized : [...prev, ...normalized]);
-      savePosts(normalized).catch(() => {});
     } catch (e) { console.error(e); }
     finally { setLoading(false); setLoadingMore(false); }
   }, [hasMore]);

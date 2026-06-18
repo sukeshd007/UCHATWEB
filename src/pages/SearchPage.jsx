@@ -6,6 +6,7 @@ import { Search, X, TrendingUp, Play, Volume2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { searchUsers, getFeedPosts, getReels, getUserByUid, followUser, unfollowUser, isFollowing } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import toast from 'react-hot-toast';
 
 const TRENDING = ['#photography', '#travel', '#food', '#music', '#tech', '#art', '#nature', '#fitness'];
@@ -266,7 +267,7 @@ const SearchUserRow = ({ user, currentUid }) => {
             <span style={{ fontSize: 14, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {user.displayName}
             </span>
-            {user.verified && <span style={{ color: 'var(--verified-color)', fontSize: 13 }}>✓</span>}
+            {user.verified && <VerifiedBadge size={16} style={{ marginLeft: 2 }} />}
           </div>
           <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>@{user.username}</span>
           {user.bio && <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.bio}</p>}
