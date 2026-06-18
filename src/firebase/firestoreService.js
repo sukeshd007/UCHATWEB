@@ -53,7 +53,7 @@ export const updateUserProfile = async (uid, data) => {
   });
 };
 
-export const completeProfileSetup = async (uid, { username, displayName, profilePhoto }) => {
+export const completeProfileSetup = async (uid, { username, displayName, profilePhoto, dob = null, gender = null }) => {
   // Build search keywords from username + displayName for full-text-like search
   const uname = username.toLowerCase();
   const dname = (displayName || '').toLowerCase();
@@ -70,6 +70,8 @@ export const completeProfileSetup = async (uid, { username, displayName, profile
     profilePhoto: profilePhoto || null,
     profileSetupComplete: true,
     searchKeywords: keywords,
+    ...(dob && { dob }),
+    ...(gender && { gender }),
     updatedAt: serverTimestamp()
   });
   // Also write to usernames collection
@@ -436,15 +438,18 @@ export const isReelLiked = async (uid, reelId) => {
 
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 
-export const createNotification = async ({ recipientId, senderId, type, message, postId = null, reelId = null, commentId = null }) => {
+export const createNotification = async ({ recipientId, senderId, type, message, postId = null, reelId = null, commentId = null, chatId = null, isSystem = false }) => {
+  if (recipientId === senderId && !isSystem) return; // Don't notify yourself
   await addDoc(collection(db, 'notifications'), {
     recipientId,
-    senderId,
-    type, // like | comment | follow | mention | message | call
+    senderId: senderId || null,
+    type, // like | comment | follow | mention | message | call | system | verified | note
     message,
     postId,
     reelId,
     commentId,
+    chatId,
+    isSystem: isSystem || false,
     read: false,
     createdAt: serverTimestamp()
   });
@@ -548,14 +553,24 @@ export const sendMessage = async (chatId, uid, messageData) => {
   if (chatSnap.exists()) {
     const chat = chatSnap.data();
     const updates = {
-      lastMessage: messageData.text || (messageData.type === 'image' ? '📷 Photo' : '🎬 Video'),
+      lastMessage: messageData.text || (messageData.type === 'image' ? '📷 Photo' : messageData.type === 'video' ? '🎬 Video' : messageData.type === 'voice' ? '🎤 Voice message' : '📎 Media'),
       lastMessageTime: serverTimestamp(),
       lastMessageSenderId: uid
     };
-    // Increment unread for all participants except sender
-    chat.participants.forEach(p => {
-      if (p !== uid) updates[`unread_${p}`] = increment(1);
-    });
+    // Increment unread + notify all participants except sender
+    for (const p of chat.participants) {
+      if (p !== uid) {
+        updates[`unread_${p}`] = increment(1);
+        // Create in-app notification (non-blocking)
+        createNotification({
+          recipientId: p,
+          senderId: uid,
+          type: 'message',
+          message: 'sent you a message',
+          chatId,
+        }).catch(() => {});
+      }
+    }
     await updateDoc(doc(db, 'chats', chatId), updates);
   }
   
@@ -652,6 +667,22 @@ export const createNote = async (uid, text) => {
     expiresAt,
     createdAt: serverTimestamp()
   });
+  // Notify followers about new note (non-blocking)
+  try {
+    const followersSnap = await getDocs(query(
+      collection(db, 'followers'),
+      where('userId', '==', uid),
+      limit(100)
+    ));
+    await Promise.all(followersSnap.docs.map(d =>
+      createNotification({
+        recipientId: d.data().followerId,
+        senderId: uid,
+        type: 'note',
+        message: 'added a new note',
+      }).catch(() => {})
+    ));
+  } catch { /* non-critical */ }
 };
 
 export const getActiveNotes = async (uids) => {
@@ -712,6 +743,22 @@ export const verifyUser = async (uid) => {
     verified: true,
     verifiedAt: serverTimestamp()
   });
+  // Fetch user to get name and gender for the notification
+  try {
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    if (userSnap.exists()) {
+      const u = userSnap.data();
+      const title = u.gender === 'female' ? 'Mrs.' : u.gender === 'male' ? 'Mr.' : '';
+      const name = u.displayName || u.username || 'User';
+      await createNotification({
+        recipientId: uid,
+        senderId: null,
+        type: 'verified',
+        message: `Congratulations${title ? `, ${title} ${name}` : `, ${name}`}! You have been successfully verified.`,
+        isSystem: true,
+      });
+    }
+  } catch { /* non-critical */ }
 };
 
 export const unverifyUser = async (uid) => {

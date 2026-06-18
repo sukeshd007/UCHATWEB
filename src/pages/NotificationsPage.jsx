@@ -1,12 +1,17 @@
 // src/pages/NotificationsPage.jsx
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Heart, MessageCircle, UserPlus, AtSign, Bell, CheckCheck } from 'lucide-react';
+import { Heart, MessageCircle, UserPlus, AtSign, Bell, Shield, StickyNote } from 'lucide-react';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
-import { getNotifications, markNotificationsRead, getUserByUid } from '../firebase/firestoreService';
+import {
+  getNotifications, markNotificationsRead, getUserByUid,
+  followUser, unfollowUser, isFollowing
+} from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
+import toast from 'react-hot-toast';
 
 const ICON_MAP = {
   like: { icon: Heart, color: '#ef4444', bg: 'rgba(239,68,68,0.12)' },
@@ -14,14 +19,16 @@ const ICON_MAP = {
   follow: { icon: UserPlus, color: '#22c55e', bg: 'rgba(34,197,94,0.12)' },
   mention: { icon: AtSign, color: '#a78bfa', bg: 'rgba(167,139,250,0.12)' },
   message: { icon: MessageCircle, color: '#7C3AED', bg: 'rgba(124,58,237,0.12)' },
+  system: { icon: Shield, color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
+  verified: { icon: null, color: '#0EA5E9', bg: 'rgba(14,165,233,0.12)' },  // uses VerifiedBadge SVG
+  note: { icon: StickyNote, color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
   default: { icon: Bell, color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' }
 };
 
 export default function NotificationsPage() {
   const { uid } = useAuth();
-  const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [enriched, setEnriched] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!uid) return;
@@ -32,28 +39,23 @@ export default function NotificationsPage() {
     setLoading(true);
     try {
       const notifs = await getNotifications(uid, 50);
-      setNotifications(notifs);
       await markNotificationsRead(uid);
-
-      // Enrich with sender data
       const senderMap = {};
       for (const n of notifs) {
-        if (!senderMap[n.senderId]) {
-          senderMap[n.senderId] = await getUserByUid(n.senderId);
+        if (n.senderId && !senderMap[n.senderId]) {
+          senderMap[n.senderId] = await getUserByUid(n.senderId).catch(() => null);
         }
       }
-      setEnriched(notifs.map(n => ({ ...n, sender: senderMap[n.senderId] })));
+      setEnriched(notifs.map(n => ({ ...n, sender: n.senderId ? senderMap[n.senderId] : null })));
     } finally {
       setLoading(false);
     }
   };
 
-  // Group by today / this week / earlier
   const groups = groupNotifications(enriched);
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto', minHeight: '100%' }}>
-      {/* Header */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 10,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -62,10 +64,7 @@ export default function NotificationsPage() {
         borderBottom: '1px solid var(--border-subtle)'
       }}>
         <h2 style={{ fontSize: 20, fontWeight: 800 }}>Notifications</h2>
-        <button
-          onClick={loadNotifications}
-          style={{ fontSize: 13, color: 'var(--brand-secondary)', fontWeight: 600 }}
-        >
+        <button onClick={loadNotifications} style={{ fontSize: 13, color: 'var(--brand-secondary)', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer' }}>
           Refresh
         </button>
       </div>
@@ -89,13 +88,8 @@ export default function NotificationsPage() {
               </span>
             </div>
             {items.map((notif, i) => (
-              <motion.div
-                key={notif.id}
-                initial={{ opacity: 0, x: -12 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.03 }}
-              >
-                <NotifRow notif={notif} />
+              <motion.div key={notif.id} initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}>
+                <NotifRow notif={notif} currentUid={uid} onRefresh={loadNotifications} />
               </motion.div>
             ))}
           </div>
@@ -105,24 +99,62 @@ export default function NotificationsPage() {
   );
 }
 
-const NotifRow = ({ notif }) => {
+const NotifRow = ({ notif, currentUid, onRefresh }) => {
+  const navigate = useNavigate();
   const cfg = ICON_MAP[notif.type] || ICON_MAP.default;
   const IconComp = cfg.icon;
+  const [followState, setFollowState] = useState('idle'); // idle | following | loading
+  const isSystem = notif.isSystem || !notif.senderId;
   const ts = notif.createdAt?.toDate
     ? formatDistanceToNow(notif.createdAt.toDate(), { addSuffix: true })
     : '';
 
-  const linkTo = notif.postId ? `/post/${notif.postId}`
-    : notif.type === 'follow' ? `/profile/${notif.sender?.username}`
+  useEffect(() => {
+    if (notif.type === 'follow' && notif.senderId) {
+      isFollowing(currentUid, notif.senderId)
+        .then(f => setFollowState(f ? 'following' : 'idle'))
+        .catch(() => {});
+    }
+  }, [notif.senderId]);
+
+  const handleFollowBack = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (followState === 'loading') return;
+    setFollowState('loading');
+    try {
+      if (followState === 'following') {
+        await unfollowUser(currentUid, notif.senderId);
+        setFollowState('idle');
+        toast('Unfollowed');
+      } else {
+        await followUser(currentUid, notif.senderId);
+        setFollowState('following');
+        toast.success('Following back!');
+      }
+    } catch {
+      toast.error('Action failed');
+      setFollowState('idle');
+    }
+  };
+
+  const linkTo = notif.type === 'follow' ? `/profile/${notif.sender?.username || ''}`
+    : notif.type === 'message' && notif.chatId ? `/messages/${notif.chatId}`
     : notif.type === 'message' ? '/messages'
+    : notif.postId ? `/post/${notif.postId}`
+    : notif.type === 'note' && notif.sender ? `/profile/${notif.sender?.username}`
     : '#';
 
+  const handleClick = () => {
+    if (linkTo !== '#') navigate(linkTo);
+  };
+
   return (
-    <Link
-      to={linkTo}
+    <div
+      onClick={handleClick}
       style={{
         display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px',
-        textDecoration: 'none', color: 'inherit',
+        cursor: linkTo !== '#' ? 'pointer' : 'default',
         transition: 'background 0.15s',
         background: notif.read ? 'transparent' : 'rgba(124, 58, 237, 0.04)',
         borderBottom: '1px solid var(--border-subtle)'
@@ -130,33 +162,60 @@ const NotifRow = ({ notif }) => {
       onMouseEnter={e => e.currentTarget.style.background = 'var(--surface-1)'}
       onMouseLeave={e => e.currentTarget.style.background = notif.read ? 'transparent' : 'rgba(124, 58, 237, 0.04)'}
     >
-      {/* Avatar + icon */}
+      {/* Avatar + icon badge */}
       <div style={{ position: 'relative', flexShrink: 0 }}>
-        <Avatar src={notif.sender?.profilePhoto} name={notif.sender?.displayName} size={44} />
-        <div style={{
-          position: 'absolute', bottom: -2, right: -2,
-          width: 20, height: 20, borderRadius: '50%',
-          background: cfg.bg, border: '2px solid var(--bg-primary)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center'
-        }}>
-          <IconComp size={10} color={cfg.color} fill={notif.type === 'like' ? cfg.color : 'none'} />
-        </div>
+        {isSystem ? (
+          <div style={{ width: 44, height: 44, borderRadius: '50%', background: cfg.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {notif.type === 'verified'
+              ? <VerifiedBadge size={28} />
+              : <IconComp size={22} color={cfg.color} />
+            }
+          </div>
+        ) : (
+          <>
+            <Avatar src={notif.sender?.profilePhoto} name={notif.sender?.displayName} size={44} verified={notif.sender?.verified} />
+            <div style={{ position: 'absolute', bottom: -2, right: -2, width: 20, height: 20, borderRadius: '50%', background: cfg.bg, border: '2px solid var(--bg-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {notif.type === 'verified'
+                ? <VerifiedBadge size={13} />
+                : <IconComp size={10} color={cfg.color} fill={notif.type === 'like' ? cfg.color : 'none'} />
+              }
+            </div>
+          </>
+        )}
       </div>
 
       {/* Text */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ fontSize: 14, lineHeight: 1.5, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-          <strong>{notif.sender?.displayName}</strong>{' '}
+        <p style={{ fontSize: 14, lineHeight: 1.5, margin: 0 }}>
+          {!isSystem && <strong>{notif.sender?.displayName || 'Someone'}</strong>}{!isSystem && ' '}
           {notif.message}
         </p>
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2, display: 'block' }}>{ts}</span>
       </div>
 
+      {/* Follow-back button for follow notifications */}
+      {notif.type === 'follow' && notif.senderId && (
+        <button
+          onClick={handleFollowBack}
+          style={{
+            padding: '6px 14px', borderRadius: 10, fontSize: 13, fontWeight: 700, flexShrink: 0,
+            background: followState === 'following' ? 'transparent' : 'linear-gradient(135deg,#7C3AED,#2563EB)',
+            border: followState === 'following' ? '1.5px solid var(--border-default)' : 'none',
+            color: followState === 'following' ? 'var(--text-primary)' : 'white',
+            cursor: followState === 'loading' ? 'default' : 'pointer',
+            opacity: followState === 'loading' ? 0.6 : 1,
+            transition: 'all 0.2s'
+          }}
+        >
+          {followState === 'following' ? 'Following' : followState === 'loading' ? '…' : 'Follow Back'}
+        </button>
+      )}
+
       {/* Unread dot */}
       {!notif.read && (
         <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--brand-primary)', flexShrink: 0 }} />
       )}
-    </Link>
+    </div>
   );
 };
 

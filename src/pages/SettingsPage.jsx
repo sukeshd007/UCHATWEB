@@ -14,6 +14,7 @@ import { logoutCurrentDevice } from '../firebase/authService';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import toast from 'react-hot-toast';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 
 export default function SettingsPage() {
   const { userProfile, uid, isGuest, isOwner, isAdmin } = useAuth();
@@ -358,7 +359,7 @@ export default function SettingsPage() {
             display: 'flex', alignItems: 'center', gap: 12
           }}
         >
-          <div style={{ width: 36, height: 36, borderRadius: 10, background: '#0EA5E9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontSize: 18 }}>✓</div>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: '#0EA5E9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><VerifiedBadge size={22} /></div>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 15 }}>Get Verified</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Apply for a verified badge on your profile</div>
@@ -534,7 +535,7 @@ export default function SettingsPage() {
         {showVerifyModal && (
           <Modal onClose={() => setShowVerifyModal(false)} title="Get Verified">
             <div style={{ textAlign: 'center', padding: '8px 0 16px' }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>✓</div>
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }}><VerifiedBadge size={56} /></div>
               <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Verification Badge</h3>
               <p style={{ fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 20 }}>
                 Verified badges are given to public figures, celebrities, and brands to help people find authentic accounts. Contact our team to apply.

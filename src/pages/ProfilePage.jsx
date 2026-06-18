@@ -5,14 +5,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Settings, Grid, Play, UserPlus, UserCheck, MessageCircle,
   MoreHorizontal, Link as LinkIcon, Repeat2,
-  Flag, UserX, Share2, Bell, BellOff, Lock, BookmarkIcon
+  Flag, UserX, Share2, Bell, BellOff, Lock, BookmarkIcon, X, Loader2
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import {
   getUserByUsername, getUserPosts, getUserReels, followUser, unfollowUser,
-  isFollowing, getOrCreateChat
+  isFollowing, getOrCreateChat, getFollowers, getFollowing, getUserByUid
 } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import toast from 'react-hot-toast';
 
 const TABS = [
@@ -36,6 +37,9 @@ export default function ProfilePage() {
   const [followLoading, setFollowLoading] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [notifOn, setNotifOn] = useState(false);
+  const [followModal, setFollowModal] = useState(null); // 'followers' | 'following'
+  const [followListUsers, setFollowListUsers] = useState([]);
+  const [followListLoading, setFollowListLoading] = useState(false);
 
   const targetUsername = username || userProfile?.username;
   const isOwnProfile = userProfile?.username === targetUsername;
@@ -114,6 +118,20 @@ export default function ProfilePage() {
   const handleMessage = async () => {
     const chatId = await getOrCreateChat(uid, profile.id);
     navigate(`/messages/${chatId}`);
+  };
+
+  const openFollowModal = async (type) => {
+    setFollowModal(type);
+    setFollowListLoading(true);
+    setFollowListUsers([]);
+    try {
+      const ids = type === 'followers'
+        ? await getFollowers(profile.id, 50)
+        : await getFollowing(profile.id, 50);
+      const users = await Promise.all(ids.map(id => getUserByUid(id).catch(() => null)));
+      setFollowListUsers(users.filter(Boolean));
+    } catch { /* silent */ }
+    finally { setFollowListLoading(false); }
   };
 
   if (loading || !profile) return <ProfileSkeleton />;
@@ -209,12 +227,7 @@ export default function ProfilePage() {
         {/* Name + badges */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 2 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>{profile.displayName}</h1>
-          {profile.verified && (
-            <svg width="20" height="20" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ display: 'inline-block', flexShrink: 0 }}>
-              <path d="M20 2 L23.5 7.5 L30 6 L29.5 12.5 L36 15 L33 21 L38 26 L32.5 29.5 L33 36 L26.5 35 L24 41 L20 37.5 L16 41 L13.5 35 L7 36 L7.5 29.5 L2 26 L7 21 L4 15 L10.5 12.5 L10 6 L16.5 7.5 Z" fill="#1877F2"/>
-              <path d="M13.5 20.5 L18 25.5 L27 15" stroke="white" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          )}
+          {profile.verified && <VerifiedBadge size={20} />}
           {profile.role === 'admin' && <Badge color="#F59E0B" bg="rgba(245,158,11,0.15)">ADMIN</Badge>}
           {profile.isGuest && <Badge color="#7C3AED" bg="rgba(124,58,237,0.1)">GUEST</Badge>}
           {profile.isPrivate && <Lock size={14} style={{ color: 'var(--text-tertiary)' }} />}
@@ -253,19 +266,21 @@ export default function ProfilePage() {
         <div style={{ display: 'flex', gap: 0, marginTop: 14, borderTop: '1px solid var(--border-subtle)', paddingTop: 14 }}>
           {[
             { label: 'Posts', value: profile.postsCount || 0 },
-            { label: 'Followers', value: profile.followersCount || 0, clickable: true },
-            { label: 'Following', value: profile.followingCount || 0, clickable: true },
+            { label: 'Followers', value: profile.followersCount || 0, clickable: true, type: 'followers' },
+            { label: 'Following', value: profile.followingCount || 0, clickable: true, type: 'following' },
             { label: 'Reels', value: profile.reelsCount || 0 },
           ].map((stat, i) => (
             <div
               key={stat.label}
+              onClick={() => stat.clickable && openFollowModal(stat.type)}
               style={{
                 flex: 1, textAlign: 'center',
                 borderRight: i < 3 ? '1px solid var(--border-subtle)' : 'none',
                 cursor: stat.clickable ? 'pointer' : 'default',
+                transition: 'background 0.15s',
               }}
             >
-              <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--text-primary)' }}>
+              <div style={{ fontSize: 17, fontWeight: 800, color: stat.clickable ? 'var(--brand-primary,#7C3AED)' : 'var(--text-primary)' }}>
                 {formatCount(stat.value)}
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1, fontWeight: 500 }}>
@@ -378,6 +393,50 @@ export default function ProfilePage() {
                   {item.label}
                 </button>
               ))}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Followers / Following Modal */}
+      <AnimatePresence>
+        {followModal && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setFollowModal(null)}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+          >
+            <motion.div
+              initial={{ y: 80 }} animate={{ y: 0 }} exit={{ y: 80 }}
+              onClick={e => e.stopPropagation()}
+              style={{ width: '100%', maxWidth: 540, background: 'var(--bg-primary)', borderRadius: '20px 20px 0 0', maxHeight: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 16px 12px', borderBottom: '1px solid var(--border-subtle)', flexShrink: 0 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, textTransform: 'capitalize' }}>{followModal}</h3>
+                <button onClick={() => setFollowModal(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', padding: 4 }}><X size={20} /></button>
+              </div>
+              <div style={{ overflowY: 'auto', flex: 1 }}>
+                {followListLoading ? (
+                  <div style={{ display: 'flex', justifyContent: 'center', padding: 32 }}><Loader2 size={24} style={{ color: 'var(--text-tertiary)' }} /></div>
+                ) : followListUsers.length === 0 ? (
+                  <p style={{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 32, fontSize: 14 }}>No {followModal} yet</p>
+                ) : (
+                  followListUsers.map(u => (
+                    <Link
+                      key={u.id}
+                      to={`/profile/${u.username}`}
+                      onClick={() => setFollowModal(null)}
+                      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', textDecoration: 'none', color: 'inherit', borderBottom: '1px solid var(--border-subtle)' }}
+                    >
+                      <Avatar src={u.profilePhoto} name={u.displayName} size={42} verified={u.verified} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)' }}>{u.displayName}</div>
+                        <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>@{u.username}</div>
+                      </div>
+                    </Link>
+                  ))
+                )}
+              </div>
             </motion.div>
           </motion.div>
         )}

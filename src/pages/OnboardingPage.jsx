@@ -8,7 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { isUsernameAvailable, completeProfileSetup } from '../firebase/firestoreService';
 import { uploadProfileImage } from '../firebase/storageService';
 
-const STEPS = ['username', 'name', 'photo'];
+const STEPS = ['username', 'name', 'dob_gender', 'photo'];
 
 export default function OnboardingPage() {
   const { firebaseUser, userProfile } = useAuth();
@@ -17,6 +17,8 @@ export default function OnboardingPage() {
   const [displayName, setDisplayName] = useState(userProfile?.displayName || '');
   const [photo, setPhoto] = useState(null);
   const [photoFile, setPhotoFile] = useState(null);
+  const [dob, setDob] = useState('');
+  const [gender, setGender] = useState(''); // 'male' | 'female' | 'other' | ''
   const [checking, setChecking] = useState(false);
   const [usernameAvailable, setUsernameAvailable] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -70,6 +72,8 @@ export default function OnboardingPage() {
         username,
         displayName,
         profilePhoto: profilePhotoUrl,
+        dob: dob || null,
+        gender: gender || null,
       });
       toast.success('Welcome to UChat!');
       navigate('/');
@@ -83,6 +87,7 @@ export default function OnboardingPage() {
   const canProceed = [
     username.length >= 3 && usernameAvailable === true,
     displayName.trim().length >= 1,
+    true, // dob/gender — skippable
     true, // photo step always skippable
   ];
 
@@ -204,7 +209,65 @@ export default function OnboardingPage() {
           )}
 
           {/* Step 2 — Photo (optional) */}
+                    {/* Step 2 — DOB & Gender */}
           {step === 2 && (
+            <StepMotion key="dob_gender">
+              <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>About you</h2>
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 18 }}>
+                Help us personalize your experience. This info is private.
+              </p>
+              {/* Date of Birth */}
+              <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'block' }}>Date of Birth</label>
+              <input
+                type="date"
+                value={dob}
+                onChange={e => setDob(e.target.value)}
+                max={new Date(Date.now() - 13 * 365.25 * 24 * 3600000).toISOString().split('T')[0]}
+                style={{
+                  width: '100%', padding: '13px 14px', marginBottom: 16,
+                  background: 'var(--input-bg)', border: '1px solid var(--input-border)',
+                  borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 15,
+                  outline: 'none', boxSizing: 'border-box'
+                }}
+              />
+              {/* Gender */}
+              <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, display: 'block' }}>Gender</label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+                {['male', 'female', 'other'].map(g => (
+                  <button
+                    key={g}
+                    onClick={() => setGender(prev => prev === g ? '' : g)}
+                    style={{
+                      padding: '10px 20px', borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                      background: gender === g ? 'var(--brand-gradient,linear-gradient(135deg,#7C3AED,#2563EB))' : 'var(--input-bg)',
+                      color: gender === g ? 'white' : 'var(--text-primary)',
+                      border: gender === g ? 'none' : '1.5px solid var(--input-border)',
+                      transition: 'all 0.2s', textTransform: 'capitalize'
+                    }}
+                  >{g}</button>
+                ))}
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 20 }}>
+                You can skip this step — it helps us personalize notifications (e.g. Mr./Mrs.) and content suggestions.
+              </p>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={() => setStep(s => s + 1)}
+                  style={{ flex: 1, padding: '13px', borderRadius: 'var(--radius-md)', background: 'transparent', border: '1.5px solid var(--border-default)', color: 'var(--text-secondary)', fontWeight: 600, cursor: 'pointer', fontSize: 15 }}
+                >
+                  Skip
+                </button>
+                <button
+                  onClick={() => setStep(s => s + 1)}
+                  style={{ flex: 2, padding: '13px', borderRadius: 'var(--radius-md)', background: 'var(--brand-gradient,linear-gradient(135deg,#7C3AED,#2563EB))', color: 'white', border: 'none', fontWeight: 700, cursor: 'pointer', fontSize: 15 }}
+                >
+                  Continue
+                </button>
+              </div>
+            </StepMotion>
+          )}
+
+          {step === 3 && (
             <StepMotion key="photo">
               <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Add a profile photo</h2>
               <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 20 }}>

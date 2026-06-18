@@ -19,6 +19,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import toast from 'react-hot-toast';
 
 const TABS = [
@@ -177,20 +178,32 @@ export default function AdminPage() {
   };
 
   const sendSecretMsg = async () => {
-    if (!secretInput.trim() || !secretUserId.trim()) { toast.error('Fill in user ID and message'); return; }
+    if (!secretInput.trim() || !secretUserId.trim()) { toast.error('Fill in user UID or username and message'); return; }
     try {
-      await addDoc(collection(db, 'admin_messages'), {
-        to: secretUserId,
-        from: uid,
-        fromUsername: userProfile?.username,
-        message: secretInput,
-        createdAt: serverTimestamp(),
-        type: 'admin',
+      let recipientId = secretUserId.trim();
+      if (recipientId.length < 28 && !recipientId.includes(' ')) {
+        try {
+          const { getUserByUsername } = await import('../firebase/firestoreService');
+          const found = await getUserByUsername(recipientId.replace('@', ''));
+          if (found?.id) recipientId = found.id;
+        } catch { /* use as-is */ }
+      }
+      // Write to notifications — NO admin name stored, identity fully hidden
+      await addDoc(collection(db, 'notifications'), {
+        recipientId,
+        senderId: null,
+        type: 'system',
+        message: secretInput.trim(),
+        isSystem: true,
         read: false,
+        createdAt: serverTimestamp(),
       });
-      toast.success('Admin message sent!');
+      toast.success('\uD83D\uDD12 Secret notification delivered!');
       setSecretInput(''); setSecretUserId('');
-    } catch { toast.error('Failed to send'); }
+    } catch (err) {
+      console.error('Secret msg error:', err);
+      toast.error('Failed to send — verify the UID/username');
+    }
   };
 
   const resolveFeedback = async (fbId, status) => {
@@ -332,7 +345,7 @@ export default function AdminPage() {
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                       {u.displayName}
-                      {u.verified && <span style={{ color: '#0EA5E9', fontSize: 12 }}>✓</span>}
+                      {u.verified && <VerifiedBadge size={14} />}
                       {u.role === 'admin' && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 6, background: 'rgba(245,158,11,0.15)', color: '#F59E0B' }}>ADMIN</span>}
                       {u.banned && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 6, background: 'rgba(239,68,68,0.15)', color: '#EF4444' }}>BANNED</span>}
                       {u.isGuest && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 6, background: 'rgba(124,58,237,0.1)', color: '#7C3AED' }}>GUEST</span>}
@@ -503,7 +516,7 @@ export default function AdminPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {[
                 { label: 'Add/Remove Admins', desc: 'Manage admin roles via Users tab', icon: '🛡️', action: () => setTab('users') },
-                { label: 'Grant Verified Badge', desc: 'Verify accounts via Users tab', icon: '✓', action: () => setTab('users') },
+                { label: 'Grant Verified Badge', desc: 'Verify accounts via Users tab', icon: '🏅', action: () => setTab('users') },
                 { label: 'View All Feedback', desc: 'See all support, reports, verification requests', icon: '📬', action: () => setTab('feedback') },
                 { label: 'Send Broadcasts', desc: 'Push notifications to all users', icon: '📣', action: () => setTab('notifications') },
                 { label: 'Platform Analytics', desc: 'View users, posts, activity stats', icon: '📊', action: () => setTab('dashboard') },
