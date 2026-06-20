@@ -12,6 +12,7 @@ import {
   savePost, unsavePost, isPostSaved,
   getUserByUid, sharePost, incrementPostViews
 } from '../../firebase/firestoreService';
+import { isUserOnline } from '../../firebase/authService';
 import Avatar from '../common/Avatar';
 import { VerifiedBadge } from '../common/VerifiedBadge';
 import PostMenu from './PostMenu';
@@ -111,7 +112,7 @@ export default function PostCard({ post }) {
             name={author?.displayName}
             size={36}
             verified={author?.verified}
-            online={author?.onlineStatus}
+            online={isUserOnline(author)}
           />
           <div className={styles.authorInfo}>
             <span className={styles.displayName}>

@@ -13,6 +13,7 @@ import {
   RecaptchaVerifier,
   signInWithPhoneNumber,
   onAuthStateChanged,
+  fetchSignInMethodsForEmail,
 } from 'firebase/auth';
 import {
   doc, setDoc, getDoc, getDocs, serverTimestamp, updateDoc,
@@ -52,6 +53,29 @@ export const loginWithEmail = async (email, password) => {
 
 // ─── Google ──────────────────────────────────────────────────────────────────
 
+const PROVIDER_LABELS = {
+  password: 'email and password',
+  'google.com': 'Google',
+  'phone': 'phone number',
+};
+
+// Converts Firebase's auth/account-exists-with-different-credential into a
+// clear, actionable message instead of leaving the user stuck on /auth with
+// silent console-only feedback (which previously looked exactly like "login
+// successful, but the app never moves past the auth screen").
+const describeAccountExistsError = async (err) => {
+  const email = err?.customData?.email;
+  if (!email) return 'An account already exists with a different sign-in method.';
+  try {
+    const methods = await fetchSignInMethodsForEmail(auth, email);
+    const labels = methods.map(m => PROVIDER_LABELS[m] || m);
+    if (labels.length > 0) {
+      return `You already have a UChat account using ${labels.join(' or ')} with this email. Please sign in that way instead.`;
+    }
+  } catch {}
+  return 'An account already exists with a different sign-in method for this email.';
+};
+
 export const loginWithGoogle = async () => {
   if (isMobile()) {
     // Redirect flow — page reloads after Google auth, result picked up in AuthContext
@@ -59,9 +83,19 @@ export const loginWithGoogle = async () => {
     await signInWithRedirect(auth, googleProvider);
     return null;
   }
-  const cred = await signInWithPopup(auth, googleProvider);
-  await ensureUserDocument(cred.user);
-  return cred;
+  try {
+    const cred = await signInWithPopup(auth, googleProvider);
+    await ensureUserDocument(cred.user);
+    return cred;
+  } catch (err) {
+    if (err?.code === 'auth/account-exists-with-different-credential') {
+      const message = await describeAccountExistsError(err);
+      const friendlyErr = new Error(message);
+      friendlyErr.code = err.code;
+      throw friendlyErr;
+    }
+    throw err;
+  }
 };
 
 // Called once on app load — processes redirect result from Google on mobile
@@ -76,6 +110,12 @@ export const handleGoogleRedirectResult = async () => {
   } catch (err) {
     sessionStorage.removeItem('googleRedirectPending');
     const code = err?.code || '';
+    if (code === 'auth/account-exists-with-different-credential') {
+      const message = await describeAccountExistsError(err);
+      const friendlyErr = new Error(message);
+      friendlyErr.code = code;
+      throw friendlyErr;
+    }
     if (code !== 'auth/no-current-user' && code !== 'auth/null-user') throw err;
   }
   return null;
@@ -247,9 +287,25 @@ export const subscribeToAuthState = (callback) => {
 export const updateOnlineStatus = async (uid, isOnline) => {
   if (!uid) return;
   try {
+    // Previously this set `lastSeen: null` whenever isOnline was true, which made
+    // it impossible to ever detect a "stuck online" ghost user (no mobile-reliable
+    // disconnect event exists, so onlineStatus can get stuck true). Always writing
+    // a real timestamp here lets isUserOnline() below treat anything older than a
+    // threshold as offline, regardless of what the raw onlineStatus flag says.
     await updateDoc(doc(db, 'users', uid), {
       onlineStatus: isOnline,
-      lastSeen: isOnline ? null : serverTimestamp(),
+      lastSeen: serverTimestamp(),
     });
   } catch {}
+};
+
+// Treats a user as online only if onlineStatus is true AND their lastSeen
+// heartbeat is recent (within thresholdMs). This protects against permanently
+// "stuck online" users caused by app-kill, phone lock, or network loss on
+// mobile — none of which reliably fire a `beforeunload` event.
+export const isUserOnline = (profile, thresholdMs = 90 * 1000) => {
+  if (!profile?.onlineStatus) return false;
+  const lastSeen = profile.lastSeen?.toDate ? profile.lastSeen.toDate() : null;
+  if (!lastSeen) return false;
+  return (Date.now() - lastSeen.getTime()) < thresholdMs;
 };

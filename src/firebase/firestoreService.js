@@ -6,6 +6,7 @@ import {
   writeBatch, runTransaction, getCountFromServer
 } from 'firebase/firestore';
 import { db } from './config';
+import { sendPushToUser } from './messagingService';
 
 // ─── USERS ────────────────────────────────────────────────────────────────────
 
@@ -434,6 +435,106 @@ export const isReelLiked = async (uid, reelId) => {
   return snap.exists();
 };
 
+// ─── REEL SAVES ───────────────────────────────────────────────────────────────
+// Mirrors savePost/unsavePost/isPostSaved but for reels, using a distinct doc id
+// pattern (`${uid}_reel_${reelId}`) so a post and reel with the same id can never
+// collide, and a `type: 'reel'` field so getSavedReels can filter cleanly.
+
+export const saveReel = async (uid, reelId) => {
+  await setDoc(doc(db, 'saves', `${uid}_reel_${reelId}`), {
+    userId: uid, reelId, type: 'reel', createdAt: serverTimestamp()
+  });
+};
+
+export const unsaveReel = async (uid, reelId) => {
+  await deleteDoc(doc(db, 'saves', `${uid}_reel_${reelId}`));
+};
+
+export const isReelSaved = async (uid, reelId) => {
+  const snap = await getDoc(doc(db, 'saves', `${uid}_reel_${reelId}`));
+  return snap.exists();
+};
+
+// Returns the actual reel documents a user has saved, most recent first.
+export const getSavedReels = async (uid, limitCount = 30) => {
+  let snap;
+  try {
+    const q = query(
+      collection(db, 'saves'),
+      where('userId', '==', uid),
+      where('type', '==', 'reel'),
+      orderBy('createdAt', 'desc'),
+      limit(limitCount)
+    );
+    snap = await getDocs(q);
+  } catch (e) {
+    console.error('getSavedReels error (check indexes):', e.message);
+    // Fallback: no orderBy, sort client-side — works even without the composite index
+    const fallbackQ = query(collection(db, 'saves'), where('userId', '==', uid), where('type', '==', 'reel'));
+    snap = await getDocs(fallbackQ);
+  }
+  const saveDocs = snap.docs
+    .map(d => d.data())
+    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const reelSnaps = await Promise.all(saveDocs.map(s => getDoc(doc(db, 'reels', s.reelId)).catch(() => null)));
+  return reelSnaps.filter(s => s && s.exists()).map(s => ({ id: s.id, ...s.data() }));
+};
+
+// ─── REPOSTS ──────────────────────────────────────────────────────────────────
+// A repost is a lightweight pointer doc (one per user per reel) — it does not
+// copy the reel's content, just records that this user reposted it. The
+// reel's own `repostsCount` is kept in sync via increment(), and the original
+// author gets notified (unless they reposted their own reel).
+
+export const repostReel = async (uid, reelId, authorId) => {
+  await setDoc(doc(db, 'reposts', `${uid}_${reelId}`), {
+    userId: uid, reelId, authorId: authorId || null, createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'reels', reelId), { repostsCount: increment(1) }).catch(() => {});
+  if (authorId && authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'repost',
+      reelId,
+      message: 'reposted your reel'
+    }).catch(() => {});
+  }
+};
+
+export const unrepostReel = async (uid, reelId) => {
+  await deleteDoc(doc(db, 'reposts', `${uid}_${reelId}`));
+  await updateDoc(doc(db, 'reels', reelId), { repostsCount: increment(-1) }).catch(() => {});
+};
+
+export const isReelReposted = async (uid, reelId) => {
+  const snap = await getDoc(doc(db, 'reposts', `${uid}_${reelId}`));
+  return snap.exists();
+};
+
+// Returns the actual reel documents a user has reposted, most recent first.
+export const getUserReposts = async (uid, limitCount = 30) => {
+  let snap;
+  try {
+    const q = query(
+      collection(db, 'reposts'),
+      where('userId', '==', uid),
+      orderBy('createdAt', 'desc'),
+      limit(limitCount)
+    );
+    snap = await getDocs(q);
+  } catch (e) {
+    console.error('getUserReposts error (check indexes):', e.message);
+    const fallbackQ = query(collection(db, 'reposts'), where('userId', '==', uid));
+    snap = await getDocs(fallbackQ);
+  }
+  const repostDocs = snap.docs
+    .map(d => d.data())
+    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const reelSnaps = await Promise.all(repostDocs.map(r => getDoc(doc(db, 'reels', r.reelId)).catch(() => null)));
+  return reelSnaps.filter(s => s && s.exists()).map(s => ({ id: s.id, ...s.data() }));
+};
+
 // ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
 
 export const createNotification = async ({ recipientId, senderId, type, message, postId = null, reelId = null, commentId = null, chatId = null, isSystem = false }) => {
@@ -441,7 +542,7 @@ export const createNotification = async ({ recipientId, senderId, type, message,
   await addDoc(collection(db, 'notifications'), {
     recipientId,
     senderId: senderId || null,
-    type, // like | comment | follow | mention | message | call | system | verified | note
+    type, // like | comment | follow | mention | message | call | system | verified | note | repost
     message,
     postId,
     reelId,
@@ -451,6 +552,23 @@ export const createNotification = async ({ recipientId, senderId, type, message,
     read: false,
     createdAt: serverTimestamp()
   });
+
+  // Best-effort real push to the recipient's device — this is what reaches
+  // their phone even when UChat is fully closed, not just an in-app badge.
+  // Failure here must never block the notification itself from being created.
+  try {
+    const [recipient, sender] = await Promise.all([
+      getUserByUid(recipientId),
+      senderId ? getUserByUid(senderId) : Promise.resolve(null)
+    ]);
+    if (recipient?.fcmToken && recipient?.pushEnabled) {
+      const title = isSystem ? 'UChat' : (sender?.displayName || 'UChat');
+      const linkUrl = postId ? `/post/${postId}` : reelId ? `/reels/${reelId}` : chatId ? `/messages/${chatId}` : '/notifications';
+      await sendPushToUser(recipient, { title, body: message, data: { type, url: linkUrl } });
+    }
+  } catch (e) {
+    console.warn('Push notification skipped:', e.message);
+  }
 };
 
 export const getNotifications = async (uid, limitCount = 30) => {
@@ -604,10 +722,32 @@ export const subscribeToMessages = (chatId, callback) => {
     orderBy('createdAt', 'asc'),
     limit(100)
   );
-  return onSnapshot(q,
+  let fallbackUnsub = null;
+  const primaryUnsub = onSnapshot(q,
     (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-    (err) => console.error('subscribeToMessages error (check indexes):', err.message)
+    (err) => {
+      // Most common cause: the chatId+createdAt composite index isn't built/deployed
+      // yet (or briefly shows "Building" in the Firebase console). Without this
+      // fallback, messages exist in Firestore but never reach the UI — they
+      // appear "received" in the console but never show up in the chat.
+      console.error('subscribeToMessages error (check Firestore indexes):', err.message);
+      const fallbackQ = query(collection(db, 'messages'), where('chatId', '==', chatId));
+      fallbackUnsub = onSnapshot(fallbackQ,
+        (snap) => {
+          const msgs = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+            .slice(-100);
+          callback(msgs);
+        },
+        (err2) => console.error('subscribeToMessages fallback also failed:', err2.message)
+      );
+    }
   );
+  return () => {
+    primaryUnsub();
+    if (fallbackUnsub) fallbackUnsub();
+  };
 };
 
 export const markChatRead = async (chatId, uid) => {
@@ -902,9 +1042,22 @@ export const subscribeToAllMessagesAdmin = (chatId, callback) => {
     orderBy('createdAt', 'asc'),
     limit(500)
   );
-  return onSnapshot(q, snap => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-  });
+  let fallbackUnsub = null;
+  const primaryUnsub = onSnapshot(q,
+    snap => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => {
+      console.error('subscribeToAllMessagesAdmin error (check Firestore indexes):', err.message);
+      const fallbackQ = query(collection(db, 'messages'), where('chatId', '==', chatId));
+      fallbackUnsub = onSnapshot(fallbackQ, snap => {
+        const msgs = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+          .slice(-500);
+        callback(msgs);
+      });
+    }
+  );
+  return () => { primaryUnsub(); if (fallbackUnsub) fallbackUnsub(); };
 };
 
 // Get all chats for admin view

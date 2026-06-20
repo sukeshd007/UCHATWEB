@@ -15,35 +15,63 @@ const R2_WORKER_URL = import.meta.env.VITE_R2_WORKER_URL;
 const MAX_IMAGE_SIZE = 10  * 1024 * 1024; // 10 MB
 const MAX_VIDEO_SIZE = 500 * 1024 * 1024; // 500 MB
 
-// ── Cloudinary upload ─────────────────────────────────────────────────────────
-// Uses an unsigned upload preset — no backend needed, completely free.
-// Sign up at cloudinary.com → Settings → Upload → Add upload preset → Unsigned.
-const uploadToCloudinary = (file, folder, onProgress = null) => {
-  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
-    return Promise.reject(
-      new Error('Cloudinary is not configured. Add VITE_CLOUDINARY_CLOUD_NAME and VITE_CLOUDINARY_UPLOAD_PRESET to your .env file.')
-    );
+// ── Cloudinary multi-account rotation ─────────────────────────────────────────
+// Each Cloudinary free account gives ~25GB storage. Spreading uploads across
+// multiple accounts gives ~25GB × N effective capacity. Only cloud name +
+// UNSIGNED upload preset name are needed here — never an API key/secret,
+// since unsigned uploads don't require auth and secrets must never ship in
+// frontend code (Vite bundles all VITE_-prefixed vars into the public JS).
+//
+// Configure via .env (see .env.example) — accounts 2-4 are optional; if unset,
+// rotation simply runs on however many accounts ARE configured.
+const buildAccountList = () => {
+  const accounts = [];
+  for (let i = 1; i <= 4; i++) {
+    const cloudName = import.meta.env[`VITE_CLOUDINARY_CLOUD_NAME_${i}`];
+    const preset = import.meta.env[`VITE_CLOUDINARY_UPLOAD_PRESET_${i}`];
+    if (cloudName && preset) accounts.push({ cloudName, preset });
   }
+  // Back-compat: if no numbered accounts are set, fall back to the original
+  // single-account env vars (or the hardcoded default) as account #1.
+  if (accounts.length === 0) {
+    accounts.push({ cloudName: CLOUDINARY_CLOUD_NAME, preset: CLOUDINARY_UPLOAD_PRESET });
+  }
+  return accounts;
+};
+const CLOUDINARY_ACCOUNTS = buildAccountList();
 
+const ROTATION_KEY = 'uchat_cloudinary_rotation_idx';
+const getNextAccountIndex = () => {
+  const current = parseInt(localStorage.getItem(ROTATION_KEY) || '0', 10) || 0;
+  const next = (current + 1) % CLOUDINARY_ACCOUNTS.length;
+  localStorage.setItem(ROTATION_KEY, String(next));
+  return current;
+};
+
+// Errors that indicate "this account is out of room / rate-limited" — worth
+// retrying on the next account rather than failing the whole upload.
+const isQuotaError = (status, message = '') => {
+  if (status === 420 || status === 429) return true; // Cloudinary rate-limit / plan-limit codes
+  const m = message.toLowerCase();
+  return m.includes('limit') || m.includes('quota') || m.includes('insufficient') || m.includes('exceeded');
+};
+
+const uploadToCloudinaryAccount = (file, folder, account, onProgress) => {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('file', file);
-    form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    form.append('upload_preset', account.preset);
     form.append('folder', folder);
-    // Give every file a unique public_id so overwrites don't clash
     form.append('public_id', uuidv4());
 
     const xhr = new XMLHttpRequest();
-
     xhr.upload.addEventListener('progress', (e) => {
-      if (e.lengthComputable && onProgress)
-        onProgress(Math.round((e.loaded / e.total) * 100));
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
     });
-
     xhr.addEventListener('load', () => {
       if (xhr.status >= 200 && xhr.status < 300) {
         const res = JSON.parse(xhr.responseText);
-        const url = res.secure_url; // always HTTPS
+        const url = res.secure_url;
         saveMediaBlob(url, file).catch(() => {});
         resolve({ url, path: res.public_id });
       } else {
@@ -52,17 +80,46 @@ const uploadToCloudinary = (file, folder, onProgress = null) => {
           const err = JSON.parse(xhr.responseText);
           if (err?.error?.message) msg = err.error.message;
         } catch {}
-        reject(new Error(msg));
+        const error = new Error(msg);
+        error.status = xhr.status;
+        reject(error);
       }
     });
-
     xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
     xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
-
-    xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/auto/upload`);
+    xhr.open('POST', `https://api.cloudinary.com/v1_1/${account.cloudName}/auto/upload`);
     xhr.send(form);
   });
 };
+
+// Tries accounts in round-robin order (spreading load evenly across all
+// configured accounts), and automatically fails over to the next account if
+// the current one reports a quota/limit error — so one maxed-out 25GB
+// account doesn't block uploads while the others still have room.
+const uploadToCloudinaryRotated = async (file, folder, onProgress = null) => {
+  if (CLOUDINARY_ACCOUNTS.length === 0) {
+    throw new Error('Cloudinary is not configured. Add VITE_CLOUDINARY_CLOUD_NAME_1 and VITE_CLOUDINARY_UPLOAD_PRESET_1 to your .env file.');
+  }
+  const startIdx = getNextAccountIndex();
+  let lastError;
+  for (let attempt = 0; attempt < CLOUDINARY_ACCOUNTS.length; attempt++) {
+    const idx = (startIdx + attempt) % CLOUDINARY_ACCOUNTS.length;
+    const account = CLOUDINARY_ACCOUNTS[idx];
+    try {
+      return await uploadToCloudinaryAccount(file, folder, account, onProgress);
+    } catch (err) {
+      lastError = err;
+      if (!isQuotaError(err.status, err.message)) throw err; // real error, don't retry other accounts
+      console.warn(`Cloudinary account ${account.cloudName} unavailable (${err.message}), trying next account…`);
+    }
+  }
+  throw lastError || new Error('All Cloudinary accounts failed');
+};
+
+// ── Cloudinary upload ─────────────────────────────────────────────────────────
+// Uses an unsigned upload preset — no backend needed, completely free.
+// Sign up at cloudinary.com → Settings → Upload → Add upload preset → Unsigned.
+const uploadToCloudinary = (file, folder, onProgress = null) => uploadToCloudinaryRotated(file, folder, onProgress);
 
 // ── Cloudflare R2 upload (optional, for large videos) ────────────────────────
 const uploadToR2 = (file, path, onProgress = null) => {

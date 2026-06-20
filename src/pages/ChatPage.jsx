@@ -15,8 +15,10 @@ import {
   markMessagesSeenByUser, subscribeToAllMessagesAdmin
 } from '../firebase/firestoreService';
 import { uploadChatMedia } from '../firebase/storageService';
+import { isUserOnline } from '../firebase/authService';
 // localDB removed — all data flows through Firestore real-time
 import Avatar from '../components/common/Avatar';
+import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import CallModal from '../components/calls/CallModal';
 import toast from 'react-hot-toast';
 import EmojiPicker from 'emoji-picker-react';
@@ -476,14 +478,21 @@ export default function ChatPage() {
           <Link to={`/profile/${otherUser.username}`} style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, textDecoration: 'none' }}>
             <div style={{ position: 'relative' }}>
               <Avatar src={otherUser.profilePhoto} name={otherUser.displayName} size={38} verified={otherUser.verified} />
-              {otherUser.onlineStatus && (
+              {isUserOnline(otherUser) && (
                 <div style={{ position: 'absolute', bottom: 1, right: 1, width: 10, height: 10, borderRadius: '50%', background: '#22c55e', border: '2px solid var(--bg-primary)' }} />
               )}
             </div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>{otherUser.displayName}</div>
-              <div style={{ fontSize: 12, color: otherUser.onlineStatus ? '#22c55e' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                {otherUser.onlineStatus ? 'Active now' : 'Offline'}
+              <div style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                {otherUser.displayName}
+                {otherUser.verified && <VerifiedBadge size={15} />}
+              </div>
+              <div style={{ fontSize: 12, color: isUserOnline(otherUser) ? '#22c55e' : 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                {isUserOnline(otherUser)
+                  ? 'Active now'
+                  : otherUser.lastSeen?.toDate
+                    ? `Active ${formatDistanceToNow(otherUser.lastSeen.toDate(), { addSuffix: true })}`
+                    : 'Offline'}
                 {/* Cloud sync indicator */}
                 <span style={{
                   width: 6, height: 6, borderRadius: '50%',

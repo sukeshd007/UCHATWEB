@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Heart, MessageCircle, Share2, Bookmark,
+  Heart, MessageCircle, Share2, Bookmark, Repeat2,
   Volume2, VolumeX, Play, Plus, ChevronUp, ChevronDown, Eye,
   Link2, X, Send
 } from 'lucide-react';
@@ -10,7 +10,9 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import {
   getReels, likeReel, unlikeReel, isReelLiked,
-  recordReelView, getUserByUid, shareReel
+  recordReelView, getUserByUid, shareReel,
+  saveReel, unsaveReel, isReelSaved,
+  repostReel, unrepostReel, isReelReposted
 } from '../firebase/firestoreService';
 import { getLocalReelVideo } from '../utils/localDB';
 import Avatar from '../components/common/Avatar';
@@ -347,6 +349,8 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
   const [showShare, setShowShare] = useState(false);
   const [heartAnim, setHeartAnim] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [reposted, setReposted] = useState(false);
+  const [repostsCount, setRepostsCount] = useState(reel.repostsCount || 0);
   const videoRef = useRef();
   const lastTapRef = useRef(0);
   const viewedRef = useRef(false);
@@ -354,7 +358,11 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
   const reelUrl = `${window.location.origin}/reels/${reel.id}`;
 
   useEffect(() => {
-    if (uid) isReelLiked(uid, reel.id).then(setLiked);
+    if (uid) {
+      isReelLiked(uid, reel.id).then(setLiked);
+      isReelSaved(uid, reel.id).then(setSaved);
+      isReelReposted(uid, reel.id).then(setReposted);
+    }
   }, [uid, reel.id]);
 
   useEffect(() => {
@@ -410,6 +418,36 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
     else await likeReel(uid, reel.id, reel.authorId);
   };
 
+  const handleSave = async () => {
+    if (!uid) { toast.error('Log in to save reels'); return; }
+    const wasSaved = saved;
+    setSaved(!wasSaved);
+    try {
+      if (wasSaved) { await unsaveReel(uid, reel.id); toast.success('Removed from saved'); }
+      else { await saveReel(uid, reel.id); toast.success('Saved'); }
+    } catch {
+      setSaved(wasSaved); // revert on failure
+      toast.error('Could not update saved reels');
+    }
+  };
+
+  const handleRepost = async () => {
+    if (!uid) { toast.error('Log in to repost'); return; }
+    const wasReposted = reposted;
+    setReposted(!wasReposted);
+    const newCount = wasReposted ? Math.max(0, repostsCount - 1) : repostsCount + 1;
+    setRepostsCount(newCount);
+    onUpdate({ repostsCount: newCount });
+    try {
+      if (wasReposted) { await unrepostReel(uid, reel.id); toast.success('Repost removed'); }
+      else { await repostReel(uid, reel.id, reel.authorId); toast.success('Reposted to your profile'); }
+    } catch {
+      setReposted(wasReposted);
+      setRepostsCount(repostsCount);
+      toast.error('Could not repost');
+    }
+  };
+
   const onShared = async () => {
     try {
       await shareReel(reel.id);
@@ -451,10 +489,14 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
             preload={isActive ? 'auto' : 'metadata'}
             style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer', pointerEvents: 'none' }}
           />
-          {/* Transparent tap/swipe overlay — sits above the video so swipe reaches container */}
+          {/* Transparent tap/swipe overlay — sits above the video so swipe reaches container.
+              zIndex lowered to 1 (was 2) so it sits BELOW the bottom-info/side-actions UI
+              (zIndex 3) below — previously this overlay sat above those buttons in the
+              stacking order despite being earlier in the DOM, silently swallowing every
+              tap meant for Comment/Share/Save/Repost/the profile link. */}
           <div
             onClick={handleTap}
-            style={{ position: 'absolute', inset: 0, zIndex: 2, cursor: 'pointer' }}
+            style={{ position: 'absolute', inset: 0, zIndex: 1, cursor: 'pointer' }}
           />
           {/* Timeline scrubber — like Instagram Reels */}
           {isActive && (
@@ -516,8 +558,8 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
       <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '65%', background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 100%)', pointerEvents: 'none' }} />
 
       {/* Bottom info */}
-      <div style={{ position: 'absolute', bottom: 100, left: 16, right: 80, color: 'white' }}>
-        <Link to={`/profile/${reel.author?.username}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, color: 'white', textDecoration: 'none' }}>
+      <div style={{ position: 'absolute', bottom: 100, left: 16, right: 80, color: 'white', zIndex: 3 }}>
+        <Link to={`/profile/${reel.author?.username}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, color: 'white', textDecoration: 'none', position: 'relative', zIndex: 3 }}>
           <Avatar src={reel.author?.profilePhoto} name={reel.author?.displayName} size={36} verified={reel.author?.verified} />
           <div>
             <span style={{ fontSize: 14, fontWeight: 700 }}>@{reel.author?.username}</span>
@@ -536,7 +578,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
       </div>
 
       {/* Side actions */}
-      <div style={{ position: 'absolute', right: 12, bottom: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
+      <div style={{ position: 'absolute', right: 12, bottom: 100, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18, zIndex: 3 }}>
         <ReelAction
           icon={<Heart size={28} fill={liked ? '#ef4444' : 'none'} color={liked ? '#ef4444' : 'white'} />}
           label={<AnimCount value={likesCount} />}
@@ -549,6 +591,12 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
           onClick={() => setShowComments(true)}
         />
         <ReelAction
+          icon={<Repeat2 size={28} color={reposted ? '#10b981' : 'white'} />}
+          label={<AnimCount value={repostsCount} />}
+          onClick={handleRepost}
+          active={reposted}
+        />
+        <ReelAction
           icon={<Share2 size={28} color="white" />}
           label={<AnimCount value={sharesCount} />}
           onClick={() => setShowShare(true)}
@@ -556,7 +604,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
         <ReelAction
           icon={<Bookmark size={28} fill={saved ? 'white' : 'none'} color="white" />}
           label="Save"
-          onClick={() => setSaved(s => !s)}
+          onClick={handleSave}
         />
         <ReelAction
           icon={muted ? <VolumeX size={24} color="white" /> : <Volume2 size={24} color="white" />}

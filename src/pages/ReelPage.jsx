@@ -6,7 +6,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Heart, MessageCircle, Share2, Volume2, VolumeX,
+  Heart, MessageCircle, Share2, Volume2, VolumeX, Bookmark, Repeat2,
   Play, Eye, ArrowLeft, X, Link2
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
@@ -14,9 +14,12 @@ import { db } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import {
   getUserByUid, likeReel, unlikeReel, isReelLiked,
-  recordReelView, shareReel
+  recordReelView, shareReel,
+  saveReel, unsaveReel, isReelSaved,
+  repostReel, unrepostReel, isReelReposted
 } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
+import CommentSheet from '../components/posts/CommentSheet';
 import toast from 'react-hot-toast';
 
 function formatCount(n) {
@@ -36,7 +39,12 @@ export default function ReelPage() {
   const [notFound, setNotFound] = useState(false);
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(0);
+  const [commentsCount, setCommentsCount] = useState(0);
   const [sharesCount, setSharesCount] = useState(0);
+  const [saved, setSaved] = useState(false);
+  const [reposted, setReposted] = useState(false);
+  const [repostsCount, setRepostsCount] = useState(0);
+  const [showComments, setShowComments] = useState(false);
   const [muted, setMuted] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [heartAnim, setHeartAnim] = useState(false);
@@ -57,13 +65,17 @@ export default function ReelPage() {
       const data = { id: snap.id, ...snap.data() };
       setReel(data);
       setLikesCount(data.likesCount || 0);
+      setCommentsCount(data.commentsCount || 0);
       setSharesCount(data.sharesCount || 0);
+      setRepostsCount(data.repostsCount || 0);
 
       const authorData = await getUserByUid(data.authorId);
       setAuthor(authorData);
 
       if (uid) {
         isReelLiked(uid, data.id).then(setLiked);
+        isReelSaved(uid, data.id).then(setSaved);
+        isReelReposted(uid, data.id).then(setReposted);
       }
 
       setLoading(false);
@@ -136,6 +148,34 @@ export default function ReelPage() {
       await shareReel(reelId);
       setSharesCount(c => c + 1);
     } catch { toast.error('Could not copy link'); }
+  };
+
+  const handleSave = async () => {
+    if (!uid) { setShowLoginCTA(true); return; }
+    const wasSaved = saved;
+    setSaved(!wasSaved);
+    try {
+      if (wasSaved) { await unsaveReel(uid, reelId); toast.success('Removed from saved'); }
+      else { await saveReel(uid, reelId); toast.success('Saved'); }
+    } catch {
+      setSaved(wasSaved);
+      toast.error('Could not update saved reels');
+    }
+  };
+
+  const handleRepost = async () => {
+    if (!uid) { setShowLoginCTA(true); return; }
+    const wasReposted = reposted;
+    setReposted(!wasReposted);
+    setRepostsCount(c => wasReposted ? Math.max(0, c - 1) : c + 1);
+    try {
+      if (wasReposted) { await unrepostReel(uid, reelId); toast.success('Repost removed'); }
+      else { await repostReel(uid, reelId, reel.authorId); toast.success('Reposted to your profile'); }
+    } catch {
+      setReposted(wasReposted);
+      setRepostsCount(c => wasReposted ? c + 1 : Math.max(0, c - 1));
+      toast.error('Could not repost');
+    }
   };
 
   if (loading) return (
@@ -243,8 +283,21 @@ export default function ReelPage() {
       {/* Side actions */}
       <div style={{ position: 'absolute', right: 12, bottom: 'calc(80px + env(safe-area-inset-bottom))', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 20 }}>
         <ActionBtn icon={<Heart size={30} fill={liked?'#ef4444':'none'} color={liked?'#ef4444':'white'} />} label={formatCount(likesCount)} onClick={handleLike} />
+        <ActionBtn icon={<MessageCircle size={28} color="white" />} label={formatCount(commentsCount)} onClick={() => uid ? setShowComments(true) : setShowLoginCTA(true)} />
+        <ActionBtn icon={<Repeat2 size={28} color={reposted ? '#10b981' : 'white'} />} label={formatCount(repostsCount)} onClick={handleRepost} />
         <ActionBtn icon={<Share2 size={28} color="white" />} label={formatCount(sharesCount)} onClick={handleShare} />
+        <ActionBtn icon={<Bookmark size={28} fill={saved ? 'white' : 'none'} color="white" />} onClick={handleSave} />
       </div>
+
+      {/* Comments */}
+      <AnimatePresence>
+        {showComments && (
+          <CommentSheet
+            post={{ ...reel, commentsCount }}
+            onClose={() => setShowComments(false)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Login CTA — shown to non-logged-in users after watching */}
       <AnimatePresence>

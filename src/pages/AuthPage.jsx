@@ -35,26 +35,56 @@ export default function AuthPage() {
   const withLoading = async (fn) => {
     setLoading(true);
     try { await fn(); }
-    catch (e) { toast.error(friendlyError(e.code || e.message)); }
+    catch (e) {
+      // Errors we construct ourselves (authService.js) carry both a Firebase
+      // error code AND a human-written, actionable message — show that message
+      // directly instead of routing it through friendlyError's generic map,
+      // which would otherwise discard it and show "Something went wrong."
+      if (e?.code === 'auth/account-exists-with-different-credential' && e?.message) {
+        toast.error(e.message, { duration: 6500 });
+      } else {
+        toast.error(friendlyError(e.code || e.message));
+      }
+    }
     finally { setLoading(false); }
   };
 
   const handleEmailLogin = () => withLoading(async () => {
-    await loginWithEmail(form.email, form.password);
+    const cred = await loginWithEmail(form.email, form.password);
+    toast.success(`Welcome back${cred?.user?.displayName ? `, ${cred.user.displayName}` : ''}!`);
     navigate('/');
   });
 
   const handleEmailSignup = () => withLoading(async () => {
     if (form.password !== form.confirmPassword) { toast.error('Passwords do not match'); return; }
     if (form.password.length < 6) { toast.error('Password must be at least 6 characters'); return; }
-    await registerWithEmail(form.email, form.password);
-    toast.success('Account created! Please verify your email.');
-    navigate('/onboarding');
+    try {
+      await registerWithEmail(form.email, form.password);
+      toast.success('Account created! Please verify your email.');
+      navigate('/onboarding');
+    } catch (e) {
+      if (e?.code === 'auth/email-already-in-use') {
+        // Switch to the Login tab instead of just showing an error — the
+        // email is already prefilled, so the user just needs their password.
+        setTab('login');
+        toast('Welcome back! Looks like you already have an account — sign in below.', { icon: '👋', duration: 5000 });
+        return;
+      }
+      throw e;
+    }
   });
 
   const handleGoogle = () => withLoading(async () => {
-    await loginWithGoogle();
-    navigate('/');
+    const cred = await loginWithGoogle();
+    if (cred) {
+      // Popup flow (desktop) — cred resolves immediately, no page reload needed.
+      toast.success(`Welcome${cred.user?.displayName ? `, ${cred.user.displayName}` : ''}!`);
+      navigate('/');
+    }
+    // Redirect flow (mobile): loginWithGoogle() returns null because the page
+    // is about to navigate away to Google. There is nothing left to do here —
+    // AuthContext picks up the result via handleGoogleRedirectResult() when
+    // the user comes back, and the route guards handle navigation from there.
   });
 
   const handleGuest = () => withLoading(async () => {

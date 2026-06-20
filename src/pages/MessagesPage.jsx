@@ -5,16 +5,17 @@ import { Search, Edit, Plus } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
-import { getUserChats, getUserByUid, getActiveNotes, getFollowing } from '../firebase/firestoreService';
+import { getUserChats, getUserByUid } from '../firebase/firestoreService';
+import { isUserOnline } from '../firebase/authService';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
+import StoryBar from '../components/feed/StoryBar';
 
 export default function MessagesPage() {
-  const { uid, userProfile } = useAuth();
+  const { uid } = useAuth();
   const [chats, setChats] = useState([]);
   const [chatUsers, setChatUsers] = useState({});
   const [search, setSearch] = useState('');
-  const [notes, setNotes] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,18 +35,6 @@ export default function MessagesPage() {
       setChatUsers(prev => ({ ...prev, ...userMap }));
     });
     return unsub;
-  }, [uid]);
-
-  // Load notes for following
-  useEffect(() => {
-    if (!uid) return;
-    const loadNotes = async () => {
-      const followingIds = await getFollowing(uid, 30);
-      const active = await getActiveNotes([uid, ...followingIds]);
-      const enriched = await Promise.all(active.map(async n => ({ ...n, author: await getUserByUid(n.authorId) })));
-      setNotes(enriched);
-    };
-    loadNotes();
   }, [uid]);
 
   const filteredChats = chats.filter(chat => {
@@ -98,36 +87,11 @@ export default function MessagesPage() {
         </div>
       </div>
 
-      {/* Notes bar — Instagram story-circle style at top of messages */}
-      {notes.length > 0 && (
-        <div style={{ padding: '10px 16px 6px', borderBottom: '1px solid var(--border-subtle)' }}>
-          <div style={{ display: 'flex', gap: 14, overflowX: 'auto', paddingBottom: 6, scrollbarWidth: 'none' }}>
-            {notes.map(note => (
-              <div key={note.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5, flexShrink: 0, cursor: 'pointer', paddingTop: 30 }}>
-                <div style={{ position: 'relative' }}>
-                  <div style={{
-                    position: 'absolute', top: -26, left: '50%', transform: 'translateX(-50%)',
-                    background: 'var(--surface-3)', border: '1px solid var(--border-default)',
-                    borderRadius: 9, padding: '2px 7px',
-                    fontSize: 10, fontWeight: 500, whiteSpace: 'nowrap', maxWidth: 80,
-                    overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'none',
-                  }}>
-                    {note.text.slice(0, 18)}{note.text.length > 18 ? '\u2026' : ''}
-                  </div>
-                  <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)', padding: 2 }}>
-                    <div style={{ width: 52, height: 52, borderRadius: '50%', background: 'var(--bg-primary)', padding: 2, overflow: 'hidden' }}>
-                      <Avatar src={note.author?.profilePhoto} name={note.author?.displayName} size={48} />
-                    </div>
-                  </div>
-                </div>
-                <span style={{ fontSize: 10, color: 'var(--text-secondary)', maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {note.author?.displayName?.split(' ')[0]}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Notes — same shared component as Home, now with the "Your note" compose
+          entry that this page's old read-only version was missing */}
+      <div style={{ padding: '10px 4px 2px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <StoryBar />
+      </div>
       {/* Chat list */}
       <div>
         {filteredChats.length === 0 ? (
@@ -177,14 +141,17 @@ const ChatRow = ({ chat, uid, otherUser }) => {
           src={photo}
           name={name}
           size={52}
-          online={!isGroup && otherUser?.onlineStatus}
+          online={!isGroup && isUserOnline(otherUser)}
           verified={!isGroup && otherUser?.verified}
         />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-          <span style={{ fontSize: 15, fontWeight: unread > 0 ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {name || 'Unknown'}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden', minWidth: 0 }}>
+            <span style={{ fontSize: 15, fontWeight: unread > 0 ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {name || 'Unknown'}
+            </span>
+            {!isGroup && otherUser?.verified && <VerifiedBadge size={14} style={{ flexShrink: 0 }} />}
           </span>
           <span style={{ fontSize: 12, color: unread > 0 ? 'var(--brand-primary)' : 'var(--text-tertiary)', flexShrink: 0, marginLeft: 8, fontWeight: unread > 0 ? 700 : 400 }}>
             {ts}

@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Heart, MessageCircle, UserPlus, AtSign, Bell, Shield, StickyNote } from 'lucide-react';
+import { Heart, MessageCircle, UserPlus, AtSign, Bell, Shield, StickyNote, Repeat2 } from 'lucide-react';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import { formatDistanceToNow } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
@@ -22,6 +22,7 @@ const ICON_MAP = {
   system: { icon: Shield, color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' },
   verified: { icon: null, color: '#0EA5E9', bg: 'rgba(14,165,233,0.12)' },  // uses VerifiedBadge SVG
   note: { icon: StickyNote, color: '#8b5cf6', bg: 'rgba(139,92,246,0.12)' },
+  repost: { icon: Repeat2, color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
   default: { icon: Bell, color: '#f59e0b', bg: 'rgba(245,158,11,0.12)' }
 };
 
@@ -142,6 +143,7 @@ const NotifRow = ({ notif, currentUid, onRefresh }) => {
     : notif.type === 'message' && notif.chatId ? `/messages/${notif.chatId}`
     : notif.type === 'message' ? '/messages'
     : notif.postId ? `/post/${notif.postId}`
+    : notif.reelId ? `/reels/${notif.reelId}`
     : notif.type === 'note' && notif.sender ? `/profile/${notif.sender?.username}`
     : '#';
 

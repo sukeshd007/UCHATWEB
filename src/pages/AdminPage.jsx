@@ -18,6 +18,7 @@ import {
   limit, getDocs, doc, updateDoc, onSnapshot, where
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
+import { isUserOnline } from '../firebase/authService';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import toast from 'react-hot-toast';
@@ -84,9 +85,14 @@ export default function AdminPage() {
   };
 
   const loadOnlineUsers = async () => {
-    const q = query(collection(db, 'users'), where('onlineStatus', '==', true), limit(20));
+    // Over-fetch since the raw onlineStatus flag alone can be stale (true for
+    // users whose tab died silently, e.g. phone lock/app-kill on mobile,
+    // without ever firing beforeunload) — isUserOnline() applies the actual
+    // staleness check against lastSeen before we show them as "online".
+    const q = query(collection(db, 'users'), where('onlineStatus', '==', true), limit(50));
     const snap = await getDocs(q);
-    setOnlineUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    const candidates = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    setOnlineUsers(candidates.filter(isUserOnline).slice(0, 20));
   };
 
   const loadFeedbacks = async () => {

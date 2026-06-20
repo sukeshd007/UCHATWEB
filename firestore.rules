@@ -56,10 +56,18 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isAuth();
 
-      // Allow user to create their own document
+      // Allow user to create their own document.
+      // Previously this hardcoded `role == 'user'` and `verified == false`, but
+      // authService.js's ensureUserDocument() sets role:'owner'/verified:true
+      // for the two designated owner emails — meaning the owner account's very
+      // first Firestore doc-create was always rejected by these rules, throwing
+      // an uncaught error during sign-in (manifesting as "login successful but
+      // app never loads").
       allow create: if isAuth() && request.auth.uid == uid
-        && request.resource.data.role == 'user'
-        && request.resource.data.verified == false
+        && (
+          (request.resource.data.role == 'user' && request.resource.data.verified == false) ||
+          (request.resource.data.role == 'owner' && isOwnerAccount())
+        )
         && request.resource.data.banned == false;
 
       // Users can update their own profile but NOT sensitive fields
@@ -108,7 +116,7 @@ service cloud.firestore {
       allow update: if isAuth() && (
         resource.data.authorId == request.auth.uid ||
         (isNotBanned() && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['likesCount', 'commentsCount', 'viewsCount', 'sharesCount']))
+          .hasOnly(['likesCount', 'commentsCount', 'viewsCount', 'sharesCount', 'repostsCount']))
       );
       allow delete: if isAuth() && (resource.data.authorId == request.auth.uid || isAdmin());
     }
@@ -132,11 +140,20 @@ service cloud.firestore {
       allow delete: if isAuth() && resource.data.userId == request.auth.uid;
     }
 
-    // ─── Saves ──────────────────────────────────────────────────────────────
+    // ─── Saves (works for both posts and reels — see `type` field) ──────────
 
     match /saves/{saveId} {
       allow read: if isAuth() && resource.data.userId == request.auth.uid;
       allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+    }
+
+    // ─── Reposts ──────────────────────────────────────────────────────────────
+
+    match /reposts/{repostId} {
+      allow read: if isAuth();
+      allow create: if isAuth() && isNotBanned()
+        && request.resource.data.userId == request.auth.uid;
       allow delete: if isAuth() && resource.data.userId == request.auth.uid;
     }
 

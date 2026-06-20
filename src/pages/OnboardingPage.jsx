@@ -1,17 +1,206 @@
 // src/pages/OnboardingPage.jsx
 import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Camera, Check, X, Loader2, AtSign, User, ArrowRight, SkipForward } from 'lucide-react';
+import { Camera, Check, X, Loader2, AtSign, User, ArrowRight, SkipForward, Cake, UserCog } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { isUsernameAvailable, completeProfileSetup } from '../firebase/firestoreService';
+import { isUsernameAvailable, completeProfileSetup, updateUserProfile } from '../firebase/firestoreService';
 import { uploadProfileImage } from '../firebase/storageService';
 
 const STEPS = ['username', 'name', 'dob_gender', 'photo'];
 
 export default function OnboardingPage() {
   const { firebaseUser, userProfile } = useAuth();
+
+  // A "returning" user already has a username — meaning they finished
+  // onboarding before (possibly under an older version of the app that
+  // didn't collect DOB/Gender yet). They should never be walked back through
+  // the full username/name wizard — just shown what's left to fill in.
+  const isReturningUser = !!userProfile?.username;
+
+  if (isReturningUser) {
+    return <WelcomeBackChecklist userProfile={userProfile} firebaseUser={firebaseUser} />;
+  }
+
+  return <NewUserWizard firebaseUser={firebaseUser} userProfile={userProfile} />;
+}
+
+// ─── Returning user: non-blocking "what's left" checklist ───────────────────
+function WelcomeBackChecklist({ userProfile, firebaseUser }) {
+  const navigate = useNavigate();
+  const [dob, setDob] = useState(userProfile?.dob || '');
+  const [gender, setGender] = useState(userProfile?.gender || '');
+  const [saving, setSaving] = useState(false);
+
+  const checklist = [
+    { label: 'Username', done: !!userProfile?.username, value: userProfile?.username ? `@${userProfile.username}` : null },
+    { label: 'Display name', done: !!userProfile?.displayName, value: userProfile?.displayName },
+    { label: 'Profile photo', done: !!userProfile?.profilePhoto },
+    { label: 'Date of birth', done: !!userProfile?.dob },
+    { label: 'Gender', done: !!userProfile?.gender },
+  ];
+  const missingDob = !userProfile?.dob;
+  const missingGender = !userProfile?.gender;
+  const hasMissingFields = missingDob || missingGender;
+
+  const handleSaveAndContinue = async () => {
+    setSaving(true);
+    try {
+      const updates = {};
+      if (dob) updates.dob = dob;
+      if (gender) updates.gender = gender;
+      if (Object.keys(updates).length > 0) {
+        await updateUserProfile(firebaseUser.uid, updates);
+        toast.success('Profile updated!');
+      }
+      navigate('/');
+    } catch (e) {
+      toast.error(e.message || 'Could not save. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{
+      minHeight: '100dvh', background: 'var(--bg-primary)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20
+    }}>
+      <motion.div
+        initial={{ opacity: 0, y: 24 }}
+        animate={{ opacity: 1, y: 0 }}
+        style={{
+          width: '100%', maxWidth: 420,
+          background: 'var(--bg-secondary)', borderRadius: 'var(--radius-xl)',
+          padding: 28, boxShadow: 'var(--card-shadow-hover)'
+        }}
+      >
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 10,
+              background: 'var(--brand-gradient)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontWeight: 800, fontSize: 18, color: 'white'
+            }}>U</div>
+            <span style={{ fontSize: 16, fontWeight: 700 }}>UChat</span>
+          </div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>
+            Welcome back, {userProfile?.displayName || `@${userProfile?.username}`}!
+          </h1>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+            {hasMissingFields
+              ? "We've added a couple of new profile fields since you last set up your account. Here's what's done and what's left:"
+              : "Your profile is fully set up. Nothing left to do here!"}
+          </p>
+        </div>
+
+        {/* Checklist */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: hasMissingFields ? 24 : 8 }}>
+          {checklist.map(item => (
+            <div key={item.label} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '10px 14px', borderRadius: 'var(--radius-md)',
+              background: item.done ? 'rgba(34,197,94,0.08)' : 'rgba(245,158,11,0.08)',
+            }}>
+              <div style={{
+                width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: item.done ? 'var(--success-color,#22c55e)' : 'transparent',
+                border: item.done ? 'none' : '1.5px solid var(--text-tertiary)',
+              }}>
+                {item.done && <Check size={13} color="white" />}
+              </div>
+              <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)', flex: 1 }}>{item.label}</span>
+              {item.done && item.value && (
+                <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{item.value}</span>
+              )}
+              {!item.done && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#f59e0b', textTransform: 'uppercase' }}>Pending</span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Inline form for missing DOB/Gender only */}
+        {hasMissingFields && (
+          <div style={{ marginBottom: 20 }}>
+            {missingDob && (
+              <>
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Cake size={14} /> Date of Birth
+                </label>
+                <input
+                  type="date"
+                  value={dob}
+                  onChange={e => setDob(e.target.value)}
+                  max={new Date(Date.now() - 13 * 365.25 * 24 * 3600000).toISOString().split('T')[0]}
+                  style={{
+                    width: '100%', padding: '13px 14px', marginBottom: 16,
+                    background: 'var(--input-bg)', border: '1px solid var(--input-border)',
+                    borderRadius: 'var(--radius-md)', color: 'var(--text-primary)', fontSize: 15,
+                    outline: 'none', boxSizing: 'border-box'
+                  }}
+                />
+              </>
+            )}
+            {missingGender && (
+              <>
+                <label style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <UserCog size={14} /> Gender
+                </label>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {['male', 'female', 'other'].map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setGender(prev => prev === g ? '' : g)}
+                      style={{
+                        padding: '10px 20px', borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                        background: gender === g ? 'var(--brand-gradient,linear-gradient(135deg,#7C3AED,#2563EB))' : 'var(--input-bg)',
+                        color: gender === g ? 'white' : 'var(--text-primary)',
+                        border: gender === g ? 'none' : '1.5px solid var(--input-border)',
+                        transition: 'all 0.2s', textTransform: 'capitalize'
+                      }}
+                    >{g}</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10 }}>
+          {hasMissingFields && (
+            <button
+              onClick={() => navigate('/')}
+              disabled={saving}
+              style={{ flex: 1, padding: '13px', borderRadius: 'var(--radius-md)', background: 'transparent', border: '1.5px solid var(--border-default)', color: 'var(--text-secondary)', fontWeight: 600, cursor: 'pointer', fontSize: 15 }}
+            >
+              Skip for now
+            </button>
+          )}
+          <button
+            onClick={hasMissingFields ? handleSaveAndContinue : () => navigate('/')}
+            disabled={saving}
+            style={{
+              flex: hasMissingFields ? 2 : 1, padding: '13px 16px',
+              background: 'var(--brand-gradient)', color: 'white',
+              borderRadius: 'var(--radius-md)', fontWeight: 700, fontSize: 15,
+              cursor: 'pointer', border: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            }}
+          >
+            {saving ? <Loader2 size={16} className="animate-spin" /> : (hasMissingFields ? 'Save & Continue' : 'Continue to UChat')}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── New user: original 4-step wizard ────────────────────────────────────────
+function NewUserWizard({ firebaseUser, userProfile }) {
   const [step, setStep] = useState(0);
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState(userProfile?.displayName || '');

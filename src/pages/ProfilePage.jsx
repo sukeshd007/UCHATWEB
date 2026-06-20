@@ -10,7 +10,8 @@ import {
 import { useAuth } from '../contexts/AuthContext';
 import {
   getUserByUsername, getUserPosts, getUserReels, followUser, unfollowUser,
-  isFollowing, getOrCreateChat, getFollowers, getFollowing, getUserByUid
+  isFollowing, getOrCreateChat, getFollowers, getFollowing, getUserByUid,
+  getUserReposts, getSavedReels
 } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
@@ -30,6 +31,10 @@ export default function ProfilePage() {
   const [profile, setProfile] = useState(null);
   const [posts, setPosts] = useState([]);
   const [reels, setReels] = useState([]);
+  const [reposts, setReposts] = useState([]);
+  const [repostsLoaded, setRepostsLoaded] = useState(false);
+  const [savedReels, setSavedReels] = useState([]);
+  const [savedLoaded, setSavedLoaded] = useState(false);
   const [tab, setTab] = useState('posts');
   const [loading, setLoading] = useState(true);
   const [following, setFollowing] = useState(false);
@@ -52,6 +57,24 @@ export default function ProfilePage() {
     loadProfile();
   }, [targetUsername]);
 
+  // Lazy-load Reposts tab content the first time it's opened
+  useEffect(() => {
+    if (tab === 'reposts' && profile?.id && !repostsLoaded) {
+      getUserReposts(profile.id, 30)
+        .then(r => { setReposts(r); setRepostsLoaded(true); })
+        .catch(() => setRepostsLoaded(true));
+    }
+  }, [tab, profile?.id, repostsLoaded]);
+
+  // Lazy-load Saved tab content the first time it's opened (own profile only)
+  useEffect(() => {
+    if (tab === 'saved' && isOwnProfile && uid && !savedLoaded) {
+      getSavedReels(uid, 30)
+        .then(r => { setSavedReels(r); setSavedLoaded(true); })
+        .catch(() => setSavedLoaded(true));
+    }
+  }, [tab, isOwnProfile, uid, savedLoaded]);
+
   const loadProfile = async () => {
     setLoading(true);
     try {
@@ -64,6 +87,10 @@ export default function ProfilePage() {
       ]);
       setPosts(postsResult.posts);
       setReels(reelsResult.reels);
+      setReposts([]);
+      setRepostsLoaded(false);
+      setSavedReels([]);
+      setSavedLoaded(false);
       if (uid && !isOwnProfile) {
         const [iFollow, theyFollow] = await Promise.all([
           isFollowing(uid, p.id),
@@ -357,10 +384,51 @@ export default function ProfilePage() {
               )
           )}
           {tab === 'reposts' && (
-            <EmptyState icon="repeat" title="No reposts yet" subtitle={isOwnProfile ? 'Repost content to share it here.' : 'No reposts yet.'} />
+            !repostsLoaded
+              ? <GridSkeleton />
+              : reposts.length === 0
+                ? <EmptyState icon="repeat" title="No reposts yet" subtitle={isOwnProfile ? 'Repost content to share it here.' : 'No reposts yet.'} />
+                : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3 }}>
+                    {reposts.map(reel => (
+                      <Link key={reel.id} to={`/reels/${reel.id}`} style={{ aspectRatio: '9/16', position: 'relative', background: '#111', display: 'block', overflow: 'hidden' }}>
+                        {reel.thumbnailUrl
+                          ? <img src={reel.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <video src={reel.videoUrl} muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        }
+                        <div style={{ position: 'absolute', top: 6, right: 6 }}>
+                          <Repeat2 size={14} color="white" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.6))' }} />
+                        </div>
+                        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, transparent 50%, rgba(0,0,0,0.5))', display: 'flex', alignItems: 'flex-end', padding: 6 }}>
+                          <Play size={14} fill="white" color="white" />
+                          <span style={{ color: 'white', fontSize: 11, marginLeft: 3 }}>{reel.viewsCount || 0}</span>
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                )
           )}
           {tab === 'saved' && isOwnProfile && (
-            <EmptyState icon="bookmark" title="No saved posts" subtitle="Posts you save will appear here. Only you can see this." />
+            !savedLoaded
+              ? <GridSkeleton />
+              : savedReels.length === 0
+                ? <EmptyState icon="bookmark" title="No saved reels" subtitle="Reels you save will appear here. Only you can see this." />
+                : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3 }}>
+                    {savedReels.map(reel => (
+                      <Link key={reel.id} to={`/reels/${reel.id}`} style={{ aspectRatio: '9/16', position: 'relative', background: '#111', display: 'block', overflow: 'hidden' }}>
+                        {reel.thumbnailUrl
+                          ? <img src={reel.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <video src={reel.videoUrl} muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        }
+                        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, transparent 50%, rgba(0,0,0,0.5))', display: 'flex', alignItems: 'flex-end', padding: 6 }}>
+                          <Play size={14} fill="white" color="white" />
+                          <span style={{ color: 'white', fontSize: 11, marginLeft: 3 }}>{reel.viewsCount || 0}</span>
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                )
           )}
         </motion.div>
       </AnimatePresence>
@@ -537,6 +605,14 @@ const EmptyState = ({ icon, title, subtitle }) => (
     </div>
     <h3 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8, color: 'var(--text-primary)' }}>{title}</h3>
     <p style={{ fontSize: 14 }}>{subtitle}</p>
+  </div>
+);
+
+const GridSkeleton = () => (
+  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 3 }}>
+    {Array.from({ length: 6 }).map((_, i) => (
+      <div key={i} style={{ aspectRatio: '9/16', background: 'var(--surface-2)' }} />
+    ))}
   </div>
 );
 

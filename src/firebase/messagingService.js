@@ -8,9 +8,16 @@
 
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { app, db } from './config';
+import { app, db, auth } from './config';
 
-const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY || 'BGi53Xg7Q9I5Z3J16QxXfoZ5S_aZuw9A05leGo9C_tgMR8jsGpm-PvhyJaolq4upHJL4GJ6UPaiOGA7h2BQyVOw';
+// Previously this ignored VITE_FIREBASE_VAPID_KEY entirely and always used a
+// hardcoded fallback key — meaning anyone who set their own VAPID key in
+// .env (as the setup instructions above tell them to) had it silently
+// ignored, which can produce mismatched-key push failures.
+const VAPID_KEY = import.meta.env.VITE_FIREBASE_VAPID_KEY ||
+  'BJcCHR1-vVvweRNDu8_QfXfstM0WX75-sDVkcT5Bw5WBt1OkeEu7QMGHL-mCp3Zj1VQ2ocxKncgZH1Y5IaCV0DE';
+
+const R2_WORKER_URL = import.meta.env.VITE_R2_WORKER_URL;
 
 let messagingInstance = null;
 
@@ -22,7 +29,7 @@ const getMessagingInstance = () => {
 };
 
 // Call this after user logs in — saves their FCM token to Firestore
-// so the Cloud Function (or server) can send them push notifications
+// so the Worker can target them with a real push, even fully offline/closed.
 export const initPushNotifications = async (uid) => {
   if (!uid || !VAPID_KEY) {
     if (!VAPID_KEY) {
@@ -46,25 +53,32 @@ export const initPushNotifications = async (uid) => {
     const token = await getToken(messaging, { vapidKey: VAPID_KEY });
 
     if (token) {
-      // Save token to user's Firestore doc so backend can target them
+      // Save token to user's Firestore doc so the Worker can target them
       await updateDoc(doc(db, 'users', uid), {
         fcmToken: token,
         fcmTokenUpdatedAt: serverTimestamp(),
         pushEnabled: true,
       });
 
-      // Subscribe token to /topics/all so admin broadcasts reach everyone
-      // This uses the FCM topic management API (free, no server needed)
-      const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || 'uchatsite';
-      try {
-        await fetch(`https://iid.googleapis.com/iid/v1/${token}/rel/topics/all`, {
-          method: 'POST',
-          headers: {
-            Authorization: `key=${import.meta.env.VITE_FIREBASE_SERVER_KEY || ''}`,
-            'Content-Type': 'application/json',
-          },
-        });
-      } catch {} // Non-critical — broadcast may not reach this device but app still works
+      // Subscribe this device to the "all" topic via the Worker (so admin
+      // broadcasts reach it). Previously this called the legacy IID API
+      // directly from the browser using a VITE_FIREBASE_SERVER_KEY that was
+      // never even set in .env — silently doing nothing. Routing it through
+      // the Worker means it uses the same OAuth2-authenticated service
+      // account as every other push call, and is verified via ID token so
+      // random callers can't subscribe arbitrary tokens to your topics.
+      if (R2_WORKER_URL && auth.currentUser) {
+        try {
+          const idToken = await auth.currentUser.getIdToken();
+          await fetch(`${R2_WORKER_URL}/subscribe-topic`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken, token, topic: 'all' }),
+          });
+        } catch (e) {
+          console.warn('Topic subscribe failed (broadcasts may not reach this device):', e.message);
+        }
+      }
 
       console.log('FCM token saved ✓');
     }
@@ -90,6 +104,27 @@ export const onForegroundMessage = (callback) => {
     });
   } catch {
     return () => {};
+  }
+};
+
+// Sends a push to a specific user via the Cloudflare Worker's FCM HTTP v1
+// endpoint. Looks up the recipient's saved FCM token first — if they don't
+// have push enabled, this is a silent no-op (the in-app notification still
+// gets written to Firestore by the caller regardless).
+export const sendPushToUser = async (recipientProfile, { title, body, data } = {}) => {
+  if (!R2_WORKER_URL) return; // Worker not configured — push silently unavailable
+  if (!recipientProfile?.fcmToken || !recipientProfile?.pushEnabled) return;
+  if (!auth.currentUser) return;
+  try {
+    const idToken = await auth.currentUser.getIdToken();
+    await fetch(`${R2_WORKER_URL}/send-push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken, token: recipientProfile.fcmToken, title, body, data }),
+    });
+  } catch (e) {
+    // Non-fatal — the in-app/Firestore notification already succeeded regardless
+    console.warn('Push send failed:', e.message);
   }
 };
 
