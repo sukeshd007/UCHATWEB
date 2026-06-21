@@ -13,7 +13,6 @@ ALLOWED_ORIGIN = "https://your-uchat-domain.com"
 # These must be set as SECRETS, not plain [vars] — never commit them to this
 # file or any repo. Run each of these from the cloudflare-worker/ folder:
 #
-#   wrangler secret put ADMIN_SECRET
 #   wrangler secret put FIREBASE_PROJECT_ID
 #   wrangler secret put FIREBASE_CLIENT_EMAIL
 #   wrangler secret put FIREBASE_PRIVATE_KEY
@@ -23,3 +22,7 @@ ALLOWED_ORIGIN = "https://your-uchat-domain.com"
 # (downloads a JSON file — paste client_email as FIREBASE_CLIENT_EMAIL,
 #  private_key as FIREBASE_PRIVATE_KEY including the BEGIN/END lines,
 #  project_id as FIREBASE_PROJECT_ID)
+#
+# No ADMIN_SECRET — the platform-broadcast endpoint (/send-notification) now
+# verifies the caller's Firebase login and checks their role in Firestore
+# directly, using this same service account. See worker.js for details.

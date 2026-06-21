@@ -231,7 +231,10 @@ service cloud.firestore {
       allow update: if isAuth() && (
         resource.data.senderId == request.auth.uid ||
         isAdmin() ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy', 'seenAt', 'deliveredTo'])
+        // "Delete for me" (deletedFor) must be updatable by ANY participant,
+        // not just the sender — otherwise only the sender could ever hide a
+        // message from their own view, which is exactly backwards.
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions', 'seenBy', 'seenAt', 'deliveredTo', 'deletedFor'])
       );
       allow delete: if false;
     }

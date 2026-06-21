@@ -20,8 +20,13 @@
  *       wrangler secret put FIREBASE_CLIENT_EMAIL
  *       wrangler secret put FIREBASE_PRIVATE_KEY     (paste the full PEM, including
  *                                                       -----BEGIN/END PRIVATE KEY-----)
- *       wrangler secret put ADMIN_SECRET             (already used by /send-notification)
- *  3. That's it — /send-push and /send-notification will start working.
+ *  3. That's it — /send-push, /subscribe-topic, and /send-notification all work
+ *     off these three secrets. There is no ADMIN_SECRET anymore: /send-notification
+ *     (the platform-wide broadcast endpoint) verifies the caller's Firebase ID
+ *     token, then looks up their `role` field in Firestore directly using the
+ *     same service account — only `admin`/`owner` accounts can broadcast. The
+ *     same service account JSON above already has the Firestore access this
+ *     needs; nothing extra to generate.
  *
  * wrangler.toml is in the same folder if you prefer CLI deploy.
  */
@@ -83,14 +88,14 @@ function pemToArrayBuffer(pem) {
 // properly signed RS256 JWT exchanged for a short-lived OAuth2 access token —
 // this is what FCM HTTP v1 requires.
 
-let cachedAccessToken = null; // { token, expiresAt } — reused across requests within the same isolate
+let accessTokenCache = {}; // scope -> { token, expiresAt } — reused across requests within the same isolate
 
-async function createServiceAccountJWT(env) {
+async function createServiceAccountJWT(env, scope) {
   const header = { alg: 'RS256', typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
     iss: env.FIREBASE_CLIENT_EMAIL,
-    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    scope,
     aud: 'https://oauth2.googleapis.com/token',
     iat: now,
     exp: now + 3600,
@@ -113,12 +118,13 @@ async function createServiceAccountJWT(env) {
   return signingInput + '.' + base64urlFromBuffer(signature);
 }
 
-async function getAccessToken(env) {
+async function getAccessToken(env, scope = 'https://www.googleapis.com/auth/firebase.messaging') {
   const now = Date.now();
-  if (cachedAccessToken && cachedAccessToken.expiresAt > now + 60000) {
-    return cachedAccessToken.token;
+  const cached = accessTokenCache[scope];
+  if (cached && cached.expiresAt > now + 60000) {
+    return cached.token;
   }
-  const jwt = await createServiceAccountJWT(env);
+  const jwt = await createServiceAccountJWT(env, scope);
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -128,8 +134,8 @@ async function getAccessToken(env) {
     }),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error_description || data.error || 'Failed to obtain FCM access token');
-  cachedAccessToken = { token: data.access_token, expiresAt: now + data.expires_in * 1000 };
+  if (!res.ok) throw new Error(data.error_description || data.error || 'Failed to obtain access token');
+  accessTokenCache[scope] = { token: data.access_token, expiresAt: now + data.expires_in * 1000 };
   return data.access_token;
 }
 
@@ -197,6 +203,31 @@ async function verifyFirebaseIdToken(idToken, projectId) {
 
 const hasServiceAccount = (env) =>
   !!(env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY);
+
+// ─── Role lookup via Firestore REST API ───────────────────────────────────
+// SECURITY FIX: /send-notification used to trust a static `adminSecret`
+// string sent from the browser, checked against a Worker secret of the same
+// name. The client had to know that string too, so it lived in VITE_-
+// prefixed env var — which gets bundled straight into the public JS, where
+// anyone could read it out of devtools and call the broadcast endpoint with
+// no login at all.
+//
+// This replaces that with a real check: verify the caller's Firebase ID
+// token (proves WHO they are), then look up THAT uid's `role` field in
+// Firestore directly from the Worker (proves they're actually allowed to
+// broadcast). No shared secret exists anymore. The same service account
+// already configured for FCM (FIREBASE_PROJECT_ID/CLIENT_EMAIL/PRIVATE_KEY)
+// is reused here with a different OAuth scope — no extra credential to set up.
+async function getUserRole(env, uid) {
+  const accessToken = await getAccessToken(env, 'https://www.googleapis.com/auth/datastore');
+  const res = await fetch(
+    `https://firestore.googleapis.com/v1/projects/${env.FIREBASE_PROJECT_ID}/databases/(default)/documents/users/${uid}`,
+    { headers: { Authorization: 'Bearer ' + accessToken } }
+  );
+  if (!res.ok) return 'user'; // no user doc / lookup failed → treat as a normal, non-admin user
+  const data = await res.json();
+  return (data.fields && data.fields.role && data.fields.role.stringValue) || 'user';
+}
 
 export default {
   async fetch(request, env) {
@@ -338,23 +369,37 @@ export default {
     }
 
     // ── POST /send-notification — broadcast push to all UChat users ────────
-    // Body: { title, body, url?, adminSecret }
-    // Same request contract as before, but now uses FCM HTTP v1 under the
-    // hood — the legacy `fcm.googleapis.com/fcm/send` API this used to call
-    // was shut down in 2024, so this endpoint was silently non-functional
-    // until this fix.
+    // Body: { title, body, url?, idToken }
+    // `idToken` is the caller's Firebase ID token. The Worker verifies it,
+    // then looks up that uid's role in Firestore and requires admin/owner —
+    // see getUserRole() above for why this replaced the old ADMIN_SECRET.
     if (request.method === 'POST' && url.pathname === '/send-notification') {
       let body;
       try { body = await request.json(); } catch { return json({ error: 'Invalid JSON' }, 400, env, origin); }
 
-      const { title, body: msgBody, url: clickUrl, adminSecret } = body;
+      const { title, body: msgBody, url: clickUrl, idToken } = body;
 
-      if (!env.ADMIN_SECRET || adminSecret !== env.ADMIN_SECRET) {
-        return json({ error: 'Unauthorized' }, 401, env, origin);
-      }
       if (!title || !msgBody) return json({ error: 'title and body required' }, 400, env, origin);
       if (!hasServiceAccount(env)) {
         return json({ error: 'Push not configured on the server (missing FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY secrets)' }, 500, env, origin);
+      }
+      if (!idToken) return json({ error: 'idToken required' }, 401, env, origin);
+
+      let callerUid;
+      try {
+        const payload = await verifyFirebaseIdToken(idToken, env.FIREBASE_PROJECT_ID);
+        callerUid = payload.sub;
+      } catch (e) {
+        return json({ error: 'Unauthorized: ' + e.message }, 401, env, origin);
+      }
+
+      try {
+        const role = await getUserRole(env, callerUid);
+        if (role !== 'admin' && role !== 'owner') {
+          return json({ error: 'Forbidden: admin role required' }, 403, env, origin);
+        }
+      } catch (e) {
+        return json({ error: 'Could not verify admin role: ' + e.message }, 500, env, origin);
       }
 
       try {
