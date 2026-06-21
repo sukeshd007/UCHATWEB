@@ -1,0 +1,25 @@
+name = "uchat-r2-worker"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "uchat-media"
+
+[vars]
+ALLOWED_ORIGIN = "https://your-uchat-domain.com"
+
+# ── Push notification secrets (FCM HTTP v1) ───────────────────────────────────
+# These must be set as SECRETS, not plain [vars] — never commit them to this
+# file or any repo. Run each of these from the cloudflare-worker/ folder:
+#
+#   wrangler secret put ADMIN_SECRET
+#   wrangler secret put FIREBASE_PROJECT_ID
+#   wrangler secret put FIREBASE_CLIENT_EMAIL
+#   wrangler secret put FIREBASE_PRIVATE_KEY
+#
+# Get FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY from:
+#   Firebase Console → Project Settings → Service Accounts → Generate new private key
+# (downloads a JSON file — paste client_email as FIREBASE_CLIENT_EMAIL,
+#  private_key as FIREBASE_PRIVATE_KEY including the BEGIN/END lines,
+#  project_id as FIREBASE_PROJECT_ID)

@@ -82,6 +82,21 @@ service cloud.firestore {
         // (triggered by follow/unfollow — the follower/following collections gate abuse)
         (isAuth() && isNotBanned() && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['followersCount', 'followingCount'])) ||
+        // Credits exactly +1 invite to ANOTHER user (fired when someone signs up
+        // via their ?ref= link). `verified`/`verifiedViaTrial`/`verifiedTrialUntil`
+        // may only change in the exact same write where inviteCount crosses the
+        // 50-invite threshold, and verified can only be forced to true — never
+        // false — so this can't be abused to grant arbitrary verification or to
+        // unverify someone else.
+        (isAuth() && isNotBanned() && request.auth.uid != uid &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['inviteCount', 'verified', 'verifiedViaTrial', 'verifiedTrialUntil', 'updatedAt']) &&
+          request.resource.data.inviteCount == (resource.data.inviteCount == null ? 0 : resource.data.inviteCount) + 1 &&
+          (
+            request.resource.data.inviteCount < 50 ||
+            (request.resource.data.verified == true && request.resource.data.verifiedViaTrial == true)
+          )
+        ) ||
         // Own system fields (posts, reels count, online status)
         (isAuth() && request.auth.uid == uid && request.resource.data.diff(resource.data).affectedKeys()
           .hasOnly(['postsCount', 'reelsCount', 'onlineStatus', 'lastSeen']))
@@ -163,14 +178,31 @@ service cloud.firestore {
       allow read: if isAuth();
       allow create: if isAuth() && isNotBanned()
         && request.resource.data.followerId == request.auth.uid;
-      allow delete: if isAuth() && resource.data.followerId == request.auth.uid;
+      allow delete: if isAuth() && (
+        resource.data.followerId == request.auth.uid ||
+        // Lets someone who just blocked this follower remove the stale
+        // "they follow me" relationship as part of blockUser() — without
+        // this, blocking only severed the blocker's own follow, not the
+        // target's follow of the blocker, since deleting another user's
+        // follow doc isn't normally allowed.
+        (resource.data.userId == request.auth.uid &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          resource.data.followerId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('blockedUsers', []))
+      );
     }
 
     match /following/{docId} {
       allow read: if isAuth();
       allow create: if isAuth() && isNotBanned()
         && request.resource.data.userId == request.auth.uid;
-      allow delete: if isAuth() && resource.data.userId == request.auth.uid;
+      allow delete: if isAuth() && (
+        resource.data.userId == request.auth.uid ||
+        // Mirrors the followers rule above — lets a blocker remove the
+        // target's "following the blocker" record too.
+        (resource.data.followingId == request.auth.uid &&
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          resource.data.userId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('blockedUsers', []))
+      );
     }
 
     // ─── Chats ──────────────────────────────────────────────────────────────
@@ -290,6 +322,13 @@ service cloud.firestore {
     match /postViews/{viewId} {
       allow read: if isAuth();
       allow create: if isAuth() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ─── Shares (lightweight log for 30-day analytics — not user-attributed) ──
+    match /shares/{shareId} {
+      allow read: if isAuth();
+      allow create: if isAuth();
       allow update, delete: if false;
     }
 

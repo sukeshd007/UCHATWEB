@@ -1,0 +1,1275 @@
+// src/firebase/firestoreService.js
+import {
+  collection, doc, addDoc, setDoc, getDoc, getDocs, updateDoc, deleteDoc,
+  query, where, orderBy, limit, startAfter, onSnapshot,
+  serverTimestamp, increment, arrayUnion, arrayRemove,
+  writeBatch, runTransaction, getCountFromServer
+} from 'firebase/firestore';
+import { db } from './config';
+import { sendPushToUser } from './messagingService';
+
+// ─── USERS ────────────────────────────────────────────────────────────────────
+
+export const getUserByUid = async (uid) => {
+  const snap = await getDoc(doc(db, 'users', uid));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+};
+
+export const getUserByUsername = async (username) => {
+  const q = query(collection(db, 'users'), where('username', '==', username.toLowerCase()));
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  const d = snap.docs[0];
+  return { id: d.id, ...d.data() };
+};
+
+// Checks if a username is available.
+// Primary: fast single-doc read from the `usernames` index collection.
+// Fallback: query the `users` collection directly (works even if the
+//           `usernames` collection is empty or the rule has not deployed yet).
+// Always returns a real boolean — never throws to the caller.
+export const isUsernameAvailable = async (username) => {
+  const clean = username.toLowerCase().trim();
+  if (!clean || clean.length < 3) return false;
+  try {
+    const snap = await getDoc(doc(db, 'usernames', clean));
+    return !snap.exists();
+  } catch {
+    // Fallback: query users collection directly
+    try {
+      const q = query(collection(db, 'users'), where('username', '==', clean), limit(1));
+      const snap = await getDocs(q);
+      return snap.empty;
+    } catch {
+      // Cannot reach Firestore — optimistically allow so UI does not lock up
+      return true;
+    }
+  }
+};
+
+export const updateUserProfile = async (uid, data) => {
+  await updateDoc(doc(db, 'users', uid), {
+    ...data,
+    updatedAt: serverTimestamp()
+  });
+};
+
+export const completeProfileSetup = async (uid, { username, displayName, profilePhoto, dob = null, gender = null }) => {
+  // Build search keywords from username + displayName for full-text-like search
+  const uname = username.toLowerCase();
+  const dname = (displayName || '').toLowerCase();
+  const keywords = Array.from(new Set([
+    uname,
+    dname,
+    ...uname.split('').map((_, i) => uname.slice(0, i + 1)),
+    ...dname.split(' ').flatMap(w => w.split('').map((_, i) => w.slice(0, i + 1))),
+  ])).filter(k => k.length > 0);
+
+  await updateDoc(doc(db, 'users', uid), {
+    username: uname,
+    displayName,
+    profilePhoto: profilePhoto || null,
+    profileSetupComplete: true,
+    searchKeywords: keywords,
+    ...(dob && { dob }),
+    ...(gender && { gender }),
+    updatedAt: serverTimestamp()
+  });
+  // Also write to usernames collection
+  await setDoc(doc(db, 'usernames', uname), { uid });
+};
+
+export const subscribeToUser = (uid, callback) => {
+  return onSnapshot(doc(db, 'users', uid), (snap) => {
+    if (snap.exists()) callback({ id: snap.id, ...snap.data() });
+  });
+};
+
+export const searchUsers = async (query_str, limitCount = 20) => {
+  const q_lower = query_str.toLowerCase().trim();
+  const end = q_lower + '\uf8ff';
+  // Search username prefix
+  const byUsername = query(collection(db, 'users'), where('username', '>=', q_lower), where('username', '<=', end), limit(limitCount));
+  // Search by keyword array (covers displayName words too)
+  const byKeyword = query(collection(db, 'users'), where('searchKeywords', 'array-contains', q_lower), limit(limitCount));
+  const [snapU, snapK] = await Promise.all([getDocs(byUsername), getDocs(byKeyword)]);
+  const seen = new Set();
+  const results = [];
+  for (const snap of [snapU, snapK]) {
+    for (const d of snap.docs) {
+      if (!seen.has(d.id)) { seen.add(d.id); results.push({ id: d.id, ...d.data() }); }
+    }
+  }
+  return results.slice(0, limitCount);
+};
+
+export const getSuggestedUsers = async (currentUid, limitCount = 10) => {
+  const q = query(
+    collection(db, 'users'),
+    where('profileSetupComplete', '==', true),
+    where('banned', '==', false),
+    limit(limitCount + 1)
+  );
+  const snap = await getDocs(q);
+  return snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(u => u.id !== currentUid)
+    .slice(0, limitCount);
+};
+
+// ─── FOLLOW SYSTEM ────────────────────────────────────────────────────────────
+
+export const followUser = async (currentUid, targetUid) => {
+  // Step 1: Write follower/following docs (these rules are straightforward)
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'followers', `${targetUid}_${currentUid}`), {
+    userId: targetUid,
+    followerId: currentUid,
+    createdAt: serverTimestamp()
+  });
+  batch.set(doc(db, 'following', `${currentUid}_${targetUid}`), {
+    userId: currentUid,
+    followingId: targetUid,
+    createdAt: serverTimestamp()
+  });
+  await batch.commit();
+
+  // Step 2: Update counts separately (avoids batch rule conflicts on other user's doc)
+  await Promise.all([
+    updateDoc(doc(db, 'users', targetUid), { followersCount: increment(1) }),
+    updateDoc(doc(db, 'users', currentUid), { followingCount: increment(1) }),
+  ]);
+
+  // Step 3: Notify target (non-blocking — don't fail the follow if notification fails)
+  isFollowing(targetUid, currentUid).then(alreadyFollowsBack => {
+    createNotification({
+      recipientId: targetUid,
+      senderId: currentUid,
+      type: 'follow',
+      message: alreadyFollowsBack ? 'followed you back' : 'started following you',
+    }).catch(() => {});
+  }).catch(() => {});
+};
+
+export const unfollowUser = async (currentUid, targetUid) => {
+  // Delete follower/following docs first
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'followers', `${targetUid}_${currentUid}`));
+  batch.delete(doc(db, 'following', `${currentUid}_${targetUid}`));
+  await batch.commit();
+
+  // Decrement counts separately
+  await Promise.all([
+    updateDoc(doc(db, 'users', targetUid), { followersCount: increment(-1) }).catch(() => {}),
+    updateDoc(doc(db, 'users', currentUid), { followingCount: increment(-1) }).catch(() => {}),
+  ]);
+};
+
+export const isFollowing = async (currentUid, targetUid) => {
+  const snap = await getDoc(doc(db, 'following', `${currentUid}_${targetUid}`));
+  return snap.exists();
+};
+
+export const getFollowers = async (uid, limitCount = 50) => {
+  const q = query(
+    collection(db, 'followers'),
+    where('userId', '==', uid),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => d.data().followerId);
+};
+
+export const getFollowing = async (uid, limitCount = 50) => {
+  const q = query(
+    collection(db, 'following'),
+    where('userId', '==', uid),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => d.data().followingId);
+};
+
+// ─── CLOSE FRIENDS ──────────────────────────────────────────────────────────
+// Stored as a simple array on the user's own doc (mirrors how Instagram's
+// Close Friends list is just a personal list, not a relationship the other
+// person needs to approve).
+
+export const getCloseFriends = async (uid) => {
+  const profile = await getUserByUid(uid);
+  return profile?.closeFriends || [];
+};
+
+export const addCloseFriend = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { closeFriends: arrayUnion(targetUid) });
+};
+
+export const removeCloseFriend = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { closeFriends: arrayRemove(targetUid) });
+};
+
+// ─── BLOCKED ACCOUNTS ─────────────────────────────────────────────────────────
+
+export const getBlockedUsers = async (uid) => {
+  const profile = await getUserByUid(uid);
+  const blockedIds = profile?.blockedUsers || [];
+  const profiles = await Promise.all(blockedIds.map(id => getUserByUid(id).catch(() => null)));
+  return profiles.filter(Boolean);
+};
+
+export const blockUser = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { blockedUsers: arrayUnion(targetUid) });
+  // Blocking implies unfollowing both directions so blocked content stops
+  // showing up in feeds/followers lists immediately.
+  await Promise.all([
+    unfollowUser(uid, targetUid).catch(() => {}),
+    unfollowUser(targetUid, uid).catch(() => {}),
+  ]);
+};
+
+export const unblockUser = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { blockedUsers: arrayRemove(targetUid) });
+};
+
+export const isUserBlocked = (currentProfile, targetUid) =>
+  !!currentProfile?.blockedUsers?.includes(targetUid);
+
+// ─── INVITES / REFERRALS ───────────────────────────────────────────────────────
+// 50 successful invites unlock a free 7-day verified trial. A referral is
+// counted the moment someone signs up for the first time via this user's
+// invite link (?ref=username) — see captureReferral() in authService.js.
+
+const INVITE_GOAL = 50;
+const TRIAL_DAYS = 7;
+
+export const recordInviteSignup = async (inviterUsername, newUserUid) => {
+  if (!inviterUsername) return;
+  const inviter = await getUserByUsername(inviterUsername).catch(() => null);
+  if (!inviter || inviter.id === newUserUid) return; // no self-referrals
+
+  const newCount = (inviter.inviteCount || 0) + 1;
+  const updates = { inviteCount: increment(1) };
+
+  // Crossing the 50-invite threshold grants (or extends) a 7-day verified trial
+  if (newCount >= INVITE_GOAL) {
+    const now = Date.now();
+    const currentExpiry = inviter.verifiedTrialUntil?.toMillis ? inviter.verifiedTrialUntil.toMillis() : 0;
+    const base = Math.max(now, currentExpiry);
+    updates.verifiedTrialUntil = new Date(base + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    updates.verified = true;
+    updates.verifiedViaTrial = true;
+  }
+  await updateDoc(doc(db, 'users', inviter.id), updates);
+};
+
+// ─── ACCOUNT ANALYTICS (last N days) ───────────────────────────────────────────
+// Queries the actual interaction collections (likes/comments/views/shares/
+// reposts), filtered to this user's content and a time window — real numbers,
+// not estimates. Capped to the user's 100 most recent posts/reels for query
+// cost reasons; typical accounts at this stage are well under that.
+
+const chunkArray = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+const countDocsWhereIn = async (collectionName, fieldName, ids, timeField, cutoff) => {
+  if (!ids || ids.length === 0) return 0;
+  let total = 0;
+  for (const batch of chunkArray(ids, 30)) { // Firestore 'in' query cap
+    try {
+      const q = query(
+        collection(db, collectionName),
+        where(fieldName, 'in', batch),
+        where(timeField, '>=', cutoff)
+      );
+      const snap = await getDocs(q);
+      total += snap.size;
+    } catch (e) {
+      console.warn(`Analytics query failed for ${collectionName}.${fieldName} (check indexes):`, e.message);
+    }
+  }
+  return total;
+};
+
+export const getAccountAnalytics = async (uid, days = 30) => {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const [postsRes, reelsRes] = await Promise.all([
+    getUserPosts(uid, null, 100),
+    getUserReels(uid, null, 100),
+  ]);
+  const postIds = postsRes.posts.map(p => p.id);
+  const reelIds = reelsRes.reels.map(r => r.id);
+
+  const [
+    postViews, reelViews,
+    postLikes, reelLikes,
+    postComments, reelComments,
+    postShares, reelShares,
+    reposts
+  ] = await Promise.all([
+    countDocsWhereIn('postViews', 'postId', postIds, 'viewedAt', cutoff),
+    countDocsWhereIn('reelViews', 'reelId', reelIds, 'viewedAt', cutoff),
+    countDocsWhereIn('likes', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('likes', 'reelId', reelIds, 'createdAt', cutoff),
+    countDocsWhereIn('comments', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('comments', 'postId', reelIds, 'createdAt', cutoff), // reel comments also use the `postId` field (see addComment)
+    countDocsWhereIn('shares', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('shares', 'reelId', reelIds, 'createdAt', cutoff),
+    countDocsWhereIn('reposts', 'reelId', reelIds, 'createdAt', cutoff),
+  ]);
+
+  return {
+    views: postViews + reelViews,
+    likes: postLikes + reelLikes,
+    comments: postComments + reelComments,
+    shares: postShares + reelShares,
+    reposts,
+    contentCount: postIds.length + reelIds.length,
+    days,
+  };
+};
+
+// ─── POSTS ────────────────────────────────────────────────────────────────────
+
+export const createPost = async (uid, postData) => {
+  const ref = await addDoc(collection(db, 'posts'), {
+    authorId: uid,
+    ...postData,
+    likesCount: 0,
+    commentsCount: 0,
+    sharesCount: 0,
+    savedCount: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'users', uid), { postsCount: increment(1) });
+  return ref.id;
+};
+
+export const getPost = async (postId) => {
+  const snap = await getDoc(doc(db, 'posts', postId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+};
+
+export const deletePost = async (postId, uid) => {
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'posts', postId));
+  batch.update(doc(db, 'users', uid), { postsCount: increment(-1) });
+  await batch.commit();
+};
+
+export const getFeedPosts = async (lastDoc = null, limitCount = 10) => {
+  let q = query(
+    collection(db, 'posts'),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
+  const snap = await getDocs(q);
+  return {
+    posts: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount
+  };
+};
+
+export const getUserPosts = async (uid, lastDoc = null, limitCount = 12) => {
+  let q = query(
+    collection(db, 'posts'),
+    where('authorId', '==', uid),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
+  const snap = await getDocs(q);
+  return {
+    posts: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount
+  };
+};
+
+// ─── LIKES ────────────────────────────────────────────────────────────────────
+
+export const likePost = async (uid, postId, authorId) => {
+  const likeId = `${uid}_${postId}`;
+  // Write like doc first
+  await setDoc(doc(db, 'likes', likeId), {
+    userId: uid, postId, type: 'post', createdAt: serverTimestamp()
+  });
+  // Update count separately (post author rule allows likesCount changes)
+  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(1) });
+
+  if (authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'like',
+      postId,
+      message: 'liked your post'
+    }).catch(() => {}); // non-blocking
+  }
+};
+
+export const unlikePost = async (uid, postId) => {
+  await deleteDoc(doc(db, 'likes', `${uid}_${postId}`));
+  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(-1) }).catch(() => {});
+};
+
+export const isPostLiked = async (uid, postId) => {
+  const snap = await getDoc(doc(db, 'likes', `${uid}_${postId}`));
+  return snap.exists();
+};
+
+// ─── SAVES ────────────────────────────────────────────────────────────────────
+
+export const savePost = async (uid, postId) => {
+  await setDoc(doc(db, 'saves', `${uid}_${postId}`), {
+    userId: uid, postId, createdAt: serverTimestamp()
+  });
+};
+
+export const unsavePost = async (uid, postId) => {
+  await deleteDoc(doc(db, 'saves', `${uid}_${postId}`));
+};
+
+export const isPostSaved = async (uid, postId) => {
+  const snap = await getDoc(doc(db, 'saves', `${uid}_${postId}`));
+  return snap.exists();
+};
+
+// ─── COMMENTS ────────────────────────────────────────────────────────────────
+
+export const addComment = async (uid, contentId, text, authorId, contentType = 'post') => {
+  const collectionName = contentType === 'reel' ? 'reels' : 'posts';
+  const ref = await addDoc(collection(db, 'comments'), {
+    authorId: uid,
+    postId: contentId, // kept as `postId` for both types so getComments/deleteComment stay simple
+    contentType,
+    text,
+    likesCount: 0,
+    createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, collectionName, contentId), { commentsCount: increment(1) });
+
+  if (authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'comment',
+      postId: contentType === 'reel' ? null : contentId,
+      reelId: contentType === 'reel' ? contentId : null,
+      commentId: ref.id,
+      message: contentType === 'reel' ? 'commented on your reel' : 'commented on your post'
+    });
+  }
+  return ref.id;
+};
+
+export const getComments = async (postId, lastDoc = null, limitCount = 20) => {
+  let q = query(
+    collection(db, 'comments'),
+    where('postId', '==', postId),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
+  const snap = await getDocs(q);
+  return {
+    comments: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount
+  };
+};
+
+export const deleteComment = async (commentId, contentId, contentType = 'post') => {
+  const collectionName = contentType === 'reel' ? 'reels' : 'posts';
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'comments', commentId));
+  batch.update(doc(db, collectionName, contentId), { commentsCount: increment(-1) });
+  await batch.commit();
+};
+
+// ─── REELS ────────────────────────────────────────────────────────────────────
+
+export const createReel = async (uid, reelData) => {
+  const ref = await addDoc(collection(db, 'reels'), {
+    authorId: uid,
+    ...reelData,
+    likesCount: 0,
+    commentsCount: 0,
+    viewsCount: 0,
+    sharesCount: 0,
+    createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'users', uid), { reelsCount: increment(1) });
+  return ref.id;
+};
+
+// Owner-only: create a reel entry that references a local file (blob URL).
+// The video only plays on the owner's device in the current session.
+// This saves cloud storage. Caption/title editing works the same way.
+export const createLocalReel = async (uid, reelData) => {
+  const ref = await addDoc(collection(db, 'reels'), {
+    authorId: uid,
+    ...reelData,
+    isLocalFile: true,
+    likesCount: 0,
+    commentsCount: 0,
+    viewsCount: 0,
+    sharesCount: 0,
+    createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'users', uid), { reelsCount: increment(1) });
+  return ref.id;
+};
+
+export const getReels = async (lastDoc = null, limitCount = 5) => {
+  let q = query(
+    collection(db, 'reels'),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
+  const snap = await getDocs(q);
+  return {
+    reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount
+  };
+};
+
+export const recordReelView = async (uid, reelId) => {
+  const viewRef = doc(db, 'reelViews', `${uid}_${reelId}`);
+  const snap = await getDoc(viewRef);
+  if (snap.exists()) return; // already counted this user's view
+  await setDoc(viewRef, { userId: uid, reelId, viewedAt: serverTimestamp() });
+  await updateDoc(doc(db, 'reels', reelId), { viewsCount: increment(1) });
+};
+
+export const shareReel = async (reelId) => {
+  await updateDoc(doc(db, 'reels', reelId), { sharesCount: increment(1) });
+  await addDoc(collection(db, 'shares'), { reelId, createdAt: serverTimestamp() }).catch(() => {});
+};
+
+export const likeReel = async (uid, reelId, authorId) => {
+  const likeId = `${uid}_reel_${reelId}`;
+  await setDoc(doc(db, 'likes', likeId), {
+    userId: uid, reelId, type: 'reel', createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'reels', reelId), { likesCount: increment(1) });
+  if (authorId && authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'like',
+      reelId,
+      message: 'liked your reel'
+    }).catch(() => {});
+  }
+};
+
+export const unlikeReel = async (uid, reelId) => {
+  await deleteDoc(doc(db, 'likes', `${uid}_reel_${reelId}`));
+  await updateDoc(doc(db, 'reels', reelId), { likesCount: increment(-1) }).catch(() => {});
+};
+
+export const isReelLiked = async (uid, reelId) => {
+  const snap = await getDoc(doc(db, 'likes', `${uid}_reel_${reelId}`));
+  return snap.exists();
+};
+
+// ─── REEL SAVES ───────────────────────────────────────────────────────────────
+// Mirrors savePost/unsavePost/isPostSaved but for reels, using a distinct doc id
+// pattern (`${uid}_reel_${reelId}`) so a post and reel with the same id can never
+// collide, and a `type: 'reel'` field so getSavedReels can filter cleanly.
+
+export const saveReel = async (uid, reelId) => {
+  await setDoc(doc(db, 'saves', `${uid}_reel_${reelId}`), {
+    userId: uid, reelId, type: 'reel', createdAt: serverTimestamp()
+  });
+};
+
+export const unsaveReel = async (uid, reelId) => {
+  await deleteDoc(doc(db, 'saves', `${uid}_reel_${reelId}`));
+};
+
+export const isReelSaved = async (uid, reelId) => {
+  const snap = await getDoc(doc(db, 'saves', `${uid}_reel_${reelId}`));
+  return snap.exists();
+};
+
+// Returns the actual reel documents a user has saved, most recent first.
+export const getSavedReels = async (uid, limitCount = 30) => {
+  let snap;
+  try {
+    const q = query(
+      collection(db, 'saves'),
+      where('userId', '==', uid),
+      where('type', '==', 'reel'),
+      orderBy('createdAt', 'desc'),
+      limit(limitCount)
+    );
+    snap = await getDocs(q);
+  } catch (e) {
+    console.error('getSavedReels error (check indexes):', e.message);
+    // Fallback: no orderBy, sort client-side — works even without the composite index
+    const fallbackQ = query(collection(db, 'saves'), where('userId', '==', uid), where('type', '==', 'reel'));
+    snap = await getDocs(fallbackQ);
+  }
+  const saveDocs = snap.docs
+    .map(d => d.data())
+    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const reelSnaps = await Promise.all(saveDocs.map(s => getDoc(doc(db, 'reels', s.reelId)).catch(() => null)));
+  return reelSnaps.filter(s => s && s.exists()).map(s => ({ id: s.id, ...s.data() }));
+};
+
+// ─── REPOSTS ──────────────────────────────────────────────────────────────────
+// A repost is a lightweight pointer doc (one per user per reel) — it does not
+// copy the reel's content, just records that this user reposted it. The
+// reel's own `repostsCount` is kept in sync via increment(), and the original
+// author gets notified (unless they reposted their own reel).
+
+export const repostReel = async (uid, reelId, authorId) => {
+  await setDoc(doc(db, 'reposts', `${uid}_${reelId}`), {
+    userId: uid, reelId, authorId: authorId || null, createdAt: serverTimestamp()
+  });
+  await updateDoc(doc(db, 'reels', reelId), { repostsCount: increment(1) }).catch(() => {});
+  if (authorId && authorId !== uid) {
+    await createNotification({
+      recipientId: authorId,
+      senderId: uid,
+      type: 'repost',
+      reelId,
+      message: 'reposted your reel'
+    }).catch(() => {});
+  }
+};
+
+export const unrepostReel = async (uid, reelId) => {
+  await deleteDoc(doc(db, 'reposts', `${uid}_${reelId}`));
+  await updateDoc(doc(db, 'reels', reelId), { repostsCount: increment(-1) }).catch(() => {});
+};
+
+export const isReelReposted = async (uid, reelId) => {
+  const snap = await getDoc(doc(db, 'reposts', `${uid}_${reelId}`));
+  return snap.exists();
+};
+
+// Returns the actual reel documents a user has reposted, most recent first.
+export const getUserReposts = async (uid, limitCount = 30) => {
+  let snap;
+  try {
+    const q = query(
+      collection(db, 'reposts'),
+      where('userId', '==', uid),
+      orderBy('createdAt', 'desc'),
+      limit(limitCount)
+    );
+    snap = await getDocs(q);
+  } catch (e) {
+    console.error('getUserReposts error (check indexes):', e.message);
+    const fallbackQ = query(collection(db, 'reposts'), where('userId', '==', uid));
+    snap = await getDocs(fallbackQ);
+  }
+  const repostDocs = snap.docs
+    .map(d => d.data())
+    .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+  const reelSnaps = await Promise.all(repostDocs.map(r => getDoc(doc(db, 'reels', r.reelId)).catch(() => null)));
+  return reelSnaps.filter(s => s && s.exists()).map(s => ({ id: s.id, ...s.data() }));
+};
+
+// ─── NOTIFICATIONS ────────────────────────────────────────────────────────────
+
+export const createNotification = async ({ recipientId, senderId, type, message, postId = null, reelId = null, commentId = null, chatId = null, isSystem = false }) => {
+  if (recipientId === senderId && !isSystem) return; // Don't notify yourself
+  await addDoc(collection(db, 'notifications'), {
+    recipientId,
+    senderId: senderId || null,
+    type, // like | comment | follow | mention | message | call | system | verified | note | repost
+    message,
+    postId,
+    reelId,
+    commentId,
+    chatId,
+    isSystem: isSystem || false,
+    read: false,
+    createdAt: serverTimestamp()
+  });
+
+  // Best-effort real push to the recipient's device — this is what reaches
+  // their phone even when UChat is fully closed, not just an in-app badge.
+  // Failure here must never block the notification itself from being created.
+  try {
+    const [recipient, sender] = await Promise.all([
+      getUserByUid(recipientId),
+      senderId ? getUserByUid(senderId) : Promise.resolve(null)
+    ]);
+    if (recipient?.fcmToken && recipient?.pushEnabled) {
+      const title = isSystem ? 'UChat' : (sender?.displayName || 'UChat');
+      const linkUrl = postId ? `/post/${postId}` : reelId ? `/reels/${reelId}` : chatId ? `/messages/${chatId}` : '/notifications';
+      await sendPushToUser(recipient, { title, body: message, data: { type, url: linkUrl } });
+    }
+  } catch (e) {
+    console.warn('Push notification skipped:', e.message);
+  }
+};
+
+export const getNotifications = async (uid, limitCount = 30) => {
+  const q = query(
+    collection(db, 'notifications'),
+    where('recipientId', '==', uid),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+export const markNotificationsRead = async (uid) => {
+  const q = query(
+    collection(db, 'notifications'),
+    where('recipientId', '==', uid),
+    where('read', '==', false)
+  );
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  snap.docs.forEach(d => batch.update(d.ref, { read: true }));
+  await batch.commit();
+};
+
+export const subscribeToNotifications = (uid, callback) => {
+  const q = query(
+    collection(db, 'notifications'),
+    where('recipientId', '==', uid),
+    where('read', '==', false)
+  );
+  return onSnapshot(q, (snap) => callback(snap.docs.length));
+};
+
+// ─── CHATS ────────────────────────────────────────────────────────────────────
+
+export const getOrCreateChat = async (uid1, uid2) => {
+  const chatId = [uid1, uid2].sort().join('_');
+  const ref = doc(db, 'chats', chatId);
+  const snap = await getDoc(ref);
+  
+  if (!snap.exists()) {
+    await setDoc(ref, {
+      participants: [uid1, uid2],
+      type: 'direct',
+      lastMessage: null,
+      lastMessageTime: null,
+      createdAt: serverTimestamp(),
+      [`unread_${uid1}`]: 0,
+      [`unread_${uid2}`]: 0
+    });
+  }
+  return chatId;
+};
+
+export const createGroupChat = async (creatorUid, participants, groupName, groupPhoto = null) => {
+  const ref = await addDoc(collection(db, 'chats'), {
+    participants: [creatorUid, ...participants],
+    type: 'group',
+    groupName,
+    groupPhoto,
+    creatorId: creatorUid,
+    admins: [creatorUid],
+    lastMessage: null,
+    lastMessageTime: null,
+    createdAt: serverTimestamp()
+  });
+  return ref.id;
+};
+
+export const getUserChats = (uid, callback) => {
+  const q = query(
+    collection(db, 'chats'),
+    where('participants', 'array-contains', uid),
+    orderBy('lastMessageTime', 'desc')
+  );
+  return onSnapshot(q,
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    async (err) => {
+      console.error('getUserChats error (check indexes):', err.message);
+      // Fallback: query without ordering so new chats without lastMessageTime still show
+      try {
+        const fallbackQ = query(collection(db, 'chats'), where('participants', 'array-contains', uid));
+        const fallbackSnap = await getDocs(fallbackQ);
+        callback(fallbackSnap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) =>
+          ((b.lastMessageTime?.seconds || b.createdAt?.seconds || 0) - (a.lastMessageTime?.seconds || a.createdAt?.seconds || 0))
+        ));
+      } catch (e2) { console.error('getUserChats fallback also failed:', e2); }
+    }
+  );
+};
+
+export const sendMessage = async (chatId, uid, messageData) => {
+  // Get chat participants so we can store them on the message
+  // (avoids expensive get() in Firestore security rules for list queries)
+  const chatSnap = await getDoc(doc(db, 'chats', chatId));
+  const participants = chatSnap.exists()
+    ? chatSnap.data().participants || [uid]
+    : [uid];
+
+  // Store receiverIds so recipients can query "messages sent to me"
+  const receiverIds = participants.filter(p => p !== uid);
+
+  const ref = await addDoc(collection(db, 'messages'), {
+    chatId,
+    senderId: uid,
+    receiverId: receiverIds[0] || null,   // for DMs
+    participants,
+    ...messageData,
+    reactions: {},
+    replyTo: messageData.replyTo || null,
+    deleted: false,
+    createdAt: serverTimestamp(),
+    seenBy: [uid],
+    deliveredTo: [uid],
+    seenAt: null,
+  });
+  
+  // Update chat's last message (reuse already-fetched chatSnap)
+  if (chatSnap.exists()) {
+    const chat = chatSnap.data();
+    const updates = {
+      lastMessage: messageData.text || (messageData.type === 'image' ? '📷 Photo' : messageData.type === 'video' ? '🎬 Video' : messageData.type === 'voice' ? '🎤 Voice message' : '📎 Media'),
+      lastMessageTime: serverTimestamp(),
+      lastMessageSenderId: uid
+    };
+    // Increment unread + notify all participants except sender
+    for (const p of chat.participants) {
+      if (p !== uid) {
+        updates[`unread_${p}`] = increment(1);
+        // Create in-app notification (non-blocking)
+        createNotification({
+          recipientId: p,
+          senderId: uid,
+          type: 'message',
+          message: 'sent you a message',
+          chatId,
+        }).catch(() => {});
+      }
+    }
+    await updateDoc(doc(db, 'chats', chatId), updates);
+  }
+  
+  return ref.id;
+};
+
+export const subscribeToMessages = (chatId, callback) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    orderBy('createdAt', 'asc'),
+    limit(100)
+  );
+  let fallbackUnsub = null;
+  const primaryUnsub = onSnapshot(q,
+    (snap) => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => {
+      // Most common cause: the chatId+createdAt composite index isn't built/deployed
+      // yet (or briefly shows "Building" in the Firebase console). Without this
+      // fallback, messages exist in Firestore but never reach the UI — they
+      // appear "received" in the console but never show up in the chat.
+      console.error('subscribeToMessages error (check Firestore indexes):', err.message);
+      const fallbackQ = query(collection(db, 'messages'), where('chatId', '==', chatId));
+      fallbackUnsub = onSnapshot(fallbackQ,
+        (snap) => {
+          const msgs = snap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+            .slice(-100);
+          callback(msgs);
+        },
+        (err2) => console.error('subscribeToMessages fallback also failed:', err2.message)
+      );
+    }
+  );
+  return () => {
+    primaryUnsub();
+    if (fallbackUnsub) fallbackUnsub();
+  };
+};
+
+export const markChatRead = async (chatId, uid) => {
+  await updateDoc(doc(db, 'chats', chatId), {
+    [`unread_${uid}`]: 0
+  });
+};
+
+// Mark all unread messages in this chat as seen by uid (double purple tick)
+export const markMessagesSeenByUser = async (chatId, uid) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    where('senderId', '!=', uid)
+  );
+  const snap = await getDocs(q);
+  const batch = writeBatch(db);
+  const now = new Date();
+  snap.docs.forEach(d => {
+    const data = d.data();
+    const seenBy = data.seenBy || [];
+    if (!seenBy.includes(uid)) {
+      batch.update(d.ref, {
+        seenBy: arrayUnion(uid),
+        seenAt: serverTimestamp(),
+      });
+    }
+  });
+  await batch.commit().catch(() => {});
+};
+
+// ─── POST VIEWS & SHARES ──────────────────────────────────────────────────────
+
+export const incrementPostViews = async (uid, postId) => {
+  const viewRef = doc(db, 'postViews', `${uid}_${postId}`);
+  const snap = await getDoc(viewRef).catch(() => null);
+  if (snap && snap.exists()) return;
+  await setDoc(viewRef, { userId: uid, postId, viewedAt: serverTimestamp() }).catch(() => {});
+  await updateDoc(doc(db, 'posts', postId), { viewsCount: increment(1) }).catch(() => {});
+};
+
+export const sharePost = async (postId) => {
+  await updateDoc(doc(db, 'posts', postId), { sharesCount: increment(1) }).catch(() => {});
+  await addDoc(collection(db, 'shares'), { postId, createdAt: serverTimestamp() }).catch(() => {});
+};
+
+export const addReaction = async (messageId, uid, emoji) => {
+  await updateDoc(doc(db, 'messages', messageId), {
+    [`reactions.${uid}`]: emoji
+  });
+};
+
+export const deleteMessage = async (messageId, deleteForEveryone = false) => {
+  if (deleteForEveryone) {
+    // Soft delete — visible to admin on server, hidden from both users
+    await updateDoc(doc(db, 'messages', messageId), {
+      deleted: true,
+      deletedForEveryone: true,
+      originalText: (await getDoc(doc(db, 'messages', messageId))).data()?.text || '',
+      text: 'This message was deleted',
+      deletedAt: serverTimestamp(),
+    });
+  } else {
+    // Delete for me only — stored as array of uids who deleted it
+    await updateDoc(doc(db, 'messages', messageId), {
+      deletedFor: arrayUnion((await getDoc(doc(db, 'messages', messageId))).data()?.senderId || ''),
+      deletedAt: serverTimestamp(),
+    });
+  }
+};
+
+// ─── NOTES ────────────────────────────────────────────────────────────────────
+
+export const createNote = async (uid, text) => {
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  await setDoc(doc(db, 'notes', uid), {
+    authorId: uid,
+    text,
+    expiresAt,
+    createdAt: serverTimestamp()
+  });
+  // Notify followers about new note (non-blocking)
+  try {
+    const followersSnap = await getDocs(query(
+      collection(db, 'followers'),
+      where('userId', '==', uid),
+      limit(100)
+    ));
+    await Promise.all(followersSnap.docs.map(d =>
+      createNotification({
+        recipientId: d.data().followerId,
+        senderId: uid,
+        type: 'note',
+        message: 'added a new note',
+      }).catch(() => {})
+    ));
+  } catch { /* non-critical */ }
+};
+
+export const getActiveNotes = async (uids) => {
+  if (!uids.length) return [];
+  const now = new Date();
+  const chunks = [];
+  for (let i = 0; i < uids.length; i += 10) chunks.push(uids.slice(i, i + 10));
+  
+  const results = await Promise.all(
+    chunks.map(chunk =>
+      getDocs(query(
+        collection(db, 'notes'),
+        where('authorId', 'in', chunk)
+      ))
+    )
+  );
+  
+  return results.flatMap(snap =>
+    snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(n => n.expiresAt?.toDate() > now)
+  );
+};
+
+// ─── REPORTS ──────────────────────────────────────────────────────────────────
+
+export const submitFeedback = async (uid, message) => {
+  await addDoc(collection(db, 'feedback'), {
+    uid: uid || null,
+    message,
+    status: 'open',
+    createdAt: serverTimestamp()
+  });
+};
+
+export const reportContent = async (reporterUid, { contentId, contentType, reason, description }) => {
+  await addDoc(collection(db, 'reports'), {
+    reporterUid,
+    contentId,
+    contentType, // post | reel | comment | user | message
+    reason,
+    description,
+    status: 'pending',
+    createdAt: serverTimestamp()
+  });
+};
+
+// ─── ADMIN ────────────────────────────────────────────────────────────────────
+
+export const banUser = async (uid, until = 'permanent') => {
+  await updateDoc(doc(db, 'users', uid), {
+    banned: true,
+    bannedAt: serverTimestamp(),
+    banUntil: until, // ISO string or 'permanent'
+  });
+};
+
+export const unbanUser = async (uid) => {
+  await updateDoc(doc(db, 'users', uid), {
+    banned: false,
+    bannedAt: null
+  });
+};
+
+export const verifyUser = async (uid) => {
+  await updateDoc(doc(db, 'users', uid), {
+    verified: true,
+    verifiedAt: serverTimestamp()
+  });
+  // Fetch user to get name and gender for the notification
+  try {
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    if (userSnap.exists()) {
+      const u = userSnap.data();
+      const title = u.gender === 'female' ? 'Mrs.' : u.gender === 'male' ? 'Mr.' : '';
+      const name = u.displayName || u.username || 'User';
+      await createNotification({
+        recipientId: uid,
+        senderId: null,
+        type: 'verified',
+        message: `Congratulations${title ? `, ${title} ${name}` : `, ${name}`}! You have been successfully verified.`,
+        isSystem: true,
+      });
+    }
+  } catch { /* non-critical */ }
+};
+
+export const unverifyUser = async (uid) => {
+  await updateDoc(doc(db, 'users', uid), {
+    verified: false
+  });
+};
+
+export const setUserRole = async (uid, role) => {
+  await updateDoc(doc(db, 'users', uid), { role });
+};
+
+export const getPlatformStats = async () => {
+  try {
+    const [usersSnap, postsSnap, reelsSnap, reportsSnap] = await Promise.all([
+      getCountFromServer(collection(db, 'users')),
+      getCountFromServer(collection(db, 'posts')),
+      getCountFromServer(collection(db, 'reels')),
+      getCountFromServer(query(collection(db, 'reports'), where('status', '==', 'pending')))
+    ]);
+    return {
+      totalUsers: usersSnap.data().count,
+      totalPosts: postsSnap.data().count,
+      totalReels: reelsSnap.data().count,
+      pendingReports: reportsSnap.data().count
+    };
+  } catch {
+    // Fallback: getDocs with a high limit
+    const [usersSnap, postsSnap, reelsSnap, reportsSnap] = await Promise.all([
+      getDocs(query(collection(db, 'users'), limit(1000))),
+      getDocs(query(collection(db, 'posts'), limit(1000))),
+      getDocs(query(collection(db, 'reels'), limit(1000))),
+      getDocs(query(collection(db, 'reports'), where('status', '==', 'pending'), limit(1000)))
+    ]);
+    return {
+      totalUsers: usersSnap.size,
+      totalPosts: postsSnap.size,
+      totalReels: reelsSnap.size,
+      pendingReports: reportsSnap.size
+    };
+  }
+};
+
+export const getAllReports = async (status = 'pending') => {
+  const q = query(
+    collection(db, 'reports'),
+    where('status', '==', status),
+    orderBy('createdAt', 'desc'),
+    limit(50)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+export const resolveReport = async (reportId, resolution) => {
+  await updateDoc(doc(db, 'reports', reportId), {
+    status: resolution,
+    resolvedAt: serverTimestamp()
+  });
+};
+
+// ─── CALLS ────────────────────────────────────────────────────────────────────
+
+export const createCallSession = async (callerId, calleeId, callType) => {
+  const ref = await addDoc(collection(db, 'calls'), {
+    callerId,
+    calleeId,
+    callType, // voice | video
+    status: 'calling', // calling | active | ended | missed | rejected
+    offer: null,
+    answer: null,
+    iceCandidates: [],
+    startTime: null,
+    endTime: null,
+    duration: null,
+    createdAt: serverTimestamp()
+  });
+  return ref.id;
+};
+
+export const updateCallSession = async (callId, data) => {
+  await updateDoc(doc(db, 'calls', callId), data);
+};
+
+export const subscribeToCall = (callId, callback) => {
+  return onSnapshot(doc(db, 'calls', callId), (snap) => {
+    if (snap.exists()) callback({ id: snap.id, ...snap.data() });
+  });
+};
+
+export const subscribeToIncomingCalls = (uid, callback) => {
+  const q = query(
+    collection(db, 'calls'),
+    where('calleeId', '==', uid),
+    where('status', '==', 'calling')
+  );
+  return onSnapshot(q, (snap) => {
+    const calls = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    callback(calls.length > 0 ? calls[0] : null);
+  });
+};
+
+// ─── ADMIN: VIEW ALL MESSAGES (soft-deleted included) ────────────────────────
+export const getAllMessagesAdmin = async (chatId, limitCount = 200) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    orderBy('createdAt', 'asc'),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+// Subscribe to all messages including deleted — for admin view
+export const subscribeToAllMessagesAdmin = (chatId, callback) => {
+  const q = query(
+    collection(db, 'messages'),
+    where('chatId', '==', chatId),
+    orderBy('createdAt', 'asc'),
+    limit(500)
+  );
+  let fallbackUnsub = null;
+  const primaryUnsub = onSnapshot(q,
+    snap => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+    (err) => {
+      console.error('subscribeToAllMessagesAdmin error (check Firestore indexes):', err.message);
+      const fallbackQ = query(collection(db, 'messages'), where('chatId', '==', chatId));
+      fallbackUnsub = onSnapshot(fallbackQ, snap => {
+        const msgs = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0))
+          .slice(-500);
+        callback(msgs);
+      });
+    }
+  );
+  return () => { primaryUnsub(); if (fallbackUnsub) fallbackUnsub(); };
+};
+
+// Get all chats for admin view
+export const getAllChatsAdmin = async (limitCount = 100) => {
+  const q = query(
+    collection(db, 'chats'),
+    orderBy('lastMessageTime', 'desc'),
+    limit(limitCount)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+};
+
+// Real-time subscribe to all chats (admin)
+export const subscribeToAllChatsAdmin = (callback) => {
+  const q = query(
+    collection(db, 'chats'),
+    orderBy('lastMessageTime', 'desc'),
+    limit(100)
+  );
+  return onSnapshot(q, snap => {
+    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  });
+};
+
+// Get reels for explore (includes all public reels)
+export const getExploreReels = async (lastDoc = null, limitCount = 10) => {
+  const constraints = [
+    collection(db, 'reels'),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount),
+  ];
+  if (lastDoc) constraints.push(startAfter(lastDoc));
+  const q = query(...constraints);
+  const snap = await getDocs(q);
+  return {
+    reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount,
+  };
+};
+
+// Get reels by a specific user (for profile page)
+export const getUserReels = async (uid, lastDoc = null, limitCount = 12) => {
+  let q = query(
+    collection(db, 'reels'),
+    where('authorId', '==', uid),
+    orderBy('createdAt', 'desc'),
+    limit(limitCount)
+  );
+  if (lastDoc) q = query(q, startAfter(lastDoc));
+  const snap = await getDocs(q);
+  return {
+    reels: snap.docs.map(d => ({ id: d.id, ...d.data() })),
+    lastDoc: snap.docs[snap.docs.length - 1] || null,
+    hasMore: snap.docs.length === limitCount,
+  };
+};
