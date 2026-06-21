@@ -18,6 +18,25 @@ import PostPage from './pages/PostPage';
 import NotificationsPage from './pages/NotificationsPage';
 import AdminPage from './pages/AdminPage';
 import SettingsPage from './pages/SettingsPage';
+import AccountsCenterPage from './pages/settings/AccountsCenterPage';
+import SavedReelsPage from './pages/settings/SavedReelsPage';
+import TimeManagementPage from './pages/settings/TimeManagementPage';
+import AccountPrivacyPage from './pages/settings/AccountPrivacyPage';
+import CloseFriendsPage from './pages/settings/CloseFriendsPage';
+import StoryPrivacyPage from './pages/settings/StoryPrivacyPage';
+import ActivityStatusPage from './pages/settings/ActivityStatusPage';
+import InviteFriendsPage from './pages/settings/InviteFriendsPage';
+import BlockedAccountsPage from './pages/settings/BlockedAccountsPage';
+import ArchivingDownloadsPage from './pages/settings/ArchivingDownloadsPage';
+import DataUsagePage from './pages/settings/DataUsagePage';
+import AppPermissionsPage from './pages/settings/AppPermissionsPage';
+import AccountToolsPage from './pages/settings/AccountToolsPage';
+import VerifiedSubscriptionPage from './pages/settings/VerifiedSubscriptionPage';
+import SecurityPage from './pages/settings/SecurityPage';
+import SupportPage from './pages/settings/SupportPage';
+import AccountStatusPage from './pages/settings/AccountStatusPage';
+import GuidelinesPage from './pages/settings/GuidelinesPage';
+import AboutPage from './pages/settings/AboutPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AppLayout from './components/layout/AppLayout';
 
@@ -93,6 +112,25 @@ const AppRoutes = () => (
       <Route path="/edit-profile" element={<EditProfilePage />} />
       <Route path="/post/:postId" element={<PostPage />} />
       <Route path="/settings" element={<SettingsPage />} />
+      <Route path="/settings/accounts-center" element={<AccountsCenterPage />} />
+      <Route path="/settings/saved-reels" element={<SavedReelsPage />} />
+      <Route path="/settings/time-management" element={<TimeManagementPage />} />
+      <Route path="/settings/privacy" element={<AccountPrivacyPage />} />
+      <Route path="/settings/privacy/close-friends" element={<CloseFriendsPage />} />
+      <Route path="/settings/story-privacy" element={<StoryPrivacyPage />} />
+      <Route path="/settings/activity-status" element={<ActivityStatusPage />} />
+      <Route path="/settings/invite-friends" element={<InviteFriendsPage />} />
+      <Route path="/settings/blocked" element={<BlockedAccountsPage />} />
+      <Route path="/settings/archiving-downloads" element={<ArchivingDownloadsPage />} />
+      <Route path="/settings/data-usage" element={<DataUsagePage />} />
+      <Route path="/settings/permissions" element={<AppPermissionsPage />} />
+      <Route path="/settings/account-tools" element={<AccountToolsPage />} />
+      <Route path="/settings/verified" element={<VerifiedSubscriptionPage />} />
+      <Route path="/settings/security" element={<SecurityPage />} />
+      <Route path="/settings/support" element={<SupportPage />} />
+      <Route path="/settings/account-status" element={<AccountStatusPage />} />
+      <Route path="/settings/guidelines" element={<GuidelinesPage />} />
+      <Route path="/settings/about" element={<AboutPage />} />
       <Route path="/admin" element={<ProtectedRoute requireAdmin><AdminPage /></ProtectedRoute>} />
     </Route>
 

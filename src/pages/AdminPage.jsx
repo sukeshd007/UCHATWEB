@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { useAuth, OWNER_EMAILS } from '../contexts/AuthContext';
 import {
-  getPlatformStats, getAllReports, resolveReport,
+  getPlatformStats, resolveReport,
   banUser, unbanUser, verifyUser, unverifyUser,
   setUserRole, getUserByUid, searchUsers, deletePost
 } from '../firebase/firestoreService';
@@ -17,7 +17,7 @@ import {
   collection, addDoc, serverTimestamp, query, orderBy,
   limit, getDocs, doc, updateDoc, onSnapshot, where
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db, auth } from '../firebase/config';
 import { isUserOnline } from '../firebase/authService';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
@@ -65,34 +65,73 @@ export default function AdminPage() {
 
   const allTabs = isOwner ? [...TABS, OWNER_TAB] : TABS;
 
-  useEffect(() => { loadDashboard(); }, []);
-  useEffect(() => {
-    if (tab === 'feedback') loadFeedbacks();
-    if (tab === 'dashboard') loadOnlineUsers();
-  }, [tab]);
+  // BUGFIX: Total Users/Posts/Online/Offline/Pending Reports used to be
+  // fetched exactly once on mount (or once per tab switch for online users),
+  // so the numbers went stale until the admin manually refreshed the page.
+  // Firestore's count() aggregation queries (used for totals) can't be
+  // listened to in real time, so those are refreshed on a short interval
+  // instead. Pending reports and online users are small, fast-changing
+  // collections, so those use a true onSnapshot listener — no polling delay.
 
-  const loadDashboard = async () => {
-    setLoading(true);
-    try {
-      const [s, r] = await Promise.all([getPlatformStats(), getAllReports('pending')]);
-      setStats(s);
-      const enriched = await Promise.all(r.map(async rep => ({
+  // Aggregate totals — periodic refresh (true push-based realtime isn't
+  // possible for count() queries without a server-maintained counter, which
+  // would need Cloud Functions/Blaze billing this project doesn't use).
+  useEffect(() => {
+    let cancelled = false;
+    const refreshStats = () => {
+      getPlatformStats().then(s => { if (!cancelled) { setStats(s); setLoading(false); } });
+    };
+    refreshStats();
+    const interval = setInterval(refreshStats, 20000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  // Pending reports — true real-time listener
+  useEffect(() => {
+    const q = query(
+      collection(db, 'reports'),
+      where('status', '==', 'pending'),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+    const unsub = onSnapshot(q, async (snap) => {
+      const raw = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const enriched = await Promise.all(raw.map(async rep => ({
         ...rep,
         reporter: await getUserByUid(rep.reporterUid).catch(() => null)
       })));
       setReports(enriched);
-    } finally { setLoading(false); }
-  };
+    }, () => {}); // ignore permission errors for non-admins briefly mounting/unmounting
+    return () => unsub();
+  }, []);
 
-  const loadOnlineUsers = async () => {
-    // Over-fetch since the raw onlineStatus flag alone can be stale (true for
-    // users whose tab died silently, e.g. phone lock/app-kill on mobile,
-    // without ever firing beforeunload) — isUserOnline() applies the actual
-    // staleness check against lastSeen before we show them as "online".
-    const q = query(collection(db, 'users'), where('onlineStatus', '==', true), limit(50));
-    const snap = await getDocs(q);
-    const candidates = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    setOnlineUsers(candidates.filter(isUserOnline).slice(0, 20));
+  // Online users — true real-time listener, PLUS a periodic re-check tick.
+  // The listener only fires when a matching doc actually changes; it won't
+  // fire just because time passed and someone's lastSeen quietly went stale
+  // (e.g. the app was killed on their phone without writing onlineStatus:
+  // false). The tick re-applies isUserOnline()'s staleness check against the
+  // same cached docs so the list/count self-corrects within ~15s either way.
+  useEffect(() => {
+    const q = query(collection(db, 'users'), where('onlineStatus', '==', true), limit(300));
+    let latestDocs = [];
+    const recompute = () => setOnlineUsers(latestDocs.filter(isUserOnline));
+    const unsub = onSnapshot(q, snap => {
+      latestDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      recompute();
+    }, () => {});
+    const staleTick = setInterval(recompute, 15000);
+    return () => { unsub(); clearInterval(staleTick); };
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'feedback') loadFeedbacks();
+  }, [tab]);
+
+  // Manual "Refresh" button — only the polled aggregate totals need this now;
+  // reports and online users are already live.
+  const loadDashboard = () => {
+    setLoading(true);
+    getPlatformStats().then(s => { setStats(s); setLoading(false); });
   };
 
   const loadFeedbacks = async () => {
@@ -150,13 +189,20 @@ export default function AdminPage() {
     if (!notifTitle.trim() || !notifBody.trim()) { toast.error('Fill in title and message'); return; }
     try {
       const workerUrl = import.meta.env.VITE_R2_WORKER_URL;
-      const adminSecret = import.meta.env.VITE_ADMIN_SECRET;
 
-      if (workerUrl && adminSecret) {
+      // SECURITY FIX: this used to send a static VITE_ADMIN_SECRET that was
+      // bundled into the public client JS — anyone could read it out of the
+      // built bundle in devtools and call this broadcast endpoint directly,
+      // with no login required at all. A Firebase ID token instead proves
+      // who is actually calling, and the Worker verifies both the token AND
+      // that this exact uid has an admin/owner role in Firestore before
+      // sending anything (see /send-notification in cloudflare-worker/worker.js).
+      if (workerUrl) {
+        const idToken = await auth.currentUser?.getIdToken();
         const res = await fetch(`${workerUrl}/send-notification`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title: notifTitle, body: notifBody, url: notifUrl || '/', adminSecret }),
+          body: JSON.stringify({ title: notifTitle, body: notifBody, url: notifUrl || '/', idToken }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -266,6 +312,7 @@ export default function AdminPage() {
                 { label: 'Posts', value: stats?.totalPosts ?? '—', icon: '📸', color: '#2563EB' },
                 { label: 'Pending Reports', value: reports.length, icon: '🚨', color: '#EF4444' },
                 { label: 'Online Now', value: onlineUsers.length, icon: '🟢', color: '#22c55e' },
+                { label: 'Offline', value: stats ? Math.max(0, stats.totalUsers - onlineUsers.length) : '—', icon: '⚪', color: 'var(--text-tertiary)' },
               ].map(s => (
                 <div key={s.label} style={{ padding: 16, borderRadius: 14, background: 'var(--surface-2)', border: '1px solid var(--border-subtle)' }}>
                   <div style={{ fontSize: 24, marginBottom: 6 }}>{s.icon}</div>
@@ -274,6 +321,9 @@ export default function AdminPage() {
                 </div>
               ))}
             </div>
+            <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: -12, marginBottom: 16 }}>
+              🟢 Online · 🚨 Reports update live · 👥 📸 Totals refresh every 20s
+            </p>
 
             {/* Online users */}
             <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>🟢 Online Users ({onlineUsers.length})</h3>
@@ -315,11 +365,11 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={() => resolveReport(rep.id, 'resolved').then(loadDashboard)}
+                  <button onClick={() => resolveReport(rep.id, 'resolved').catch(() => toast.error('Failed to resolve report'))}
                     style={{ padding: '6px 14px', borderRadius: 8, background: '#22c55e', color: 'white', border: 'none', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
                     Resolve
                   </button>
-                  <button onClick={() => resolveReport(rep.id, 'dismissed').then(loadDashboard)}
+                  <button onClick={() => resolveReport(rep.id, 'dismissed').catch(() => toast.error('Failed to dismiss report'))}
                     style={{ padding: '6px 14px', borderRadius: 8, background: 'var(--surface-3)', color: 'var(--text-primary)', border: '1px solid var(--border-default)', fontWeight: 600, fontSize: 12, cursor: 'pointer' }}>
                     Dismiss
                   </button>
@@ -472,9 +522,9 @@ export default function AdminPage() {
             <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', marginBottom: 14 }}>
               <p style={{ fontSize: 12, color: '#F59E0B', fontWeight: 600, marginBottom: 4 }}>⚙️ One-time setup required</p>
               <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                1. Firebase Console → Project Settings → Cloud Messaging → copy <strong>Server key</strong><br/>
-                2. Cloudflare Worker dashboard → add env var <code>FCM_SERVER_KEY</code><br/>
-                3. Add env var <code>ADMIN_SECRET</code> (any password) to both Cloudflare Worker and your <code>.env</code> as <code>VITE_ADMIN_SECRET</code>
+                1. Firebase Console → Project Settings → Service Accounts → Generate new private key<br/>
+                2. On the Cloudflare Worker, run <code>wrangler secret put FIREBASE_PROJECT_ID</code>, <code>FIREBASE_CLIENT_EMAIL</code>, and <code>FIREBASE_PRIVATE_KEY</code> using values from that downloaded JSON<br/>
+                3. That's it — no shared secret needed. The Worker verifies your login and checks your admin/owner role in Firestore directly (see <code>cloudflare-worker/worker.js</code>).
               </p>
             </div>
 

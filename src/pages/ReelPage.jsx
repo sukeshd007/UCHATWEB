@@ -7,7 +7,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, MessageCircle, Share2, Volume2, VolumeX, Bookmark, Repeat2,
-  Play, Eye, ArrowLeft, X, Link2
+  Play, Eye, ArrowLeft, X, Link2, MoreVertical
 } from 'lucide-react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -20,6 +20,7 @@ import {
 } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
 import CommentSheet from '../components/posts/CommentSheet';
+import ReelMenu from '../components/posts/ReelMenu';
 import toast from 'react-hot-toast';
 
 function formatCount(n) {
@@ -50,6 +51,7 @@ export default function ReelPage() {
   const [heartAnim, setHeartAnim] = useState(false);
   const [showShareSheet, setShowShareSheet] = useState(false);
   const [showLoginCTA, setShowLoginCTA] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const videoRef = useRef();
   const viewedRef = useRef(false);
   const lastTapRef = useRef(0);
@@ -287,6 +289,7 @@ export default function ReelPage() {
         <ActionBtn icon={<Repeat2 size={28} color={reposted ? '#10b981' : 'white'} />} label={formatCount(repostsCount)} onClick={handleRepost} />
         <ActionBtn icon={<Share2 size={28} color="white" />} label={formatCount(sharesCount)} onClick={handleShare} />
         <ActionBtn icon={<Bookmark size={28} fill={saved ? 'white' : 'none'} color="white" />} onClick={handleSave} />
+        <ActionBtn icon={<MoreVertical size={26} color="white" />} onClick={() => uid ? setShowMenu(true) : setShowLoginCTA(true)} />
       </div>
 
       {/* Comments */}
@@ -295,6 +298,18 @@ export default function ReelPage() {
           <CommentSheet
             post={{ ...reel, commentsCount }}
             onClose={() => setShowComments(false)}
+            contentType="reel"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Options menu (delete / report / copy link) */}
+      <AnimatePresence>
+        {showMenu && (
+          <ReelMenu
+            reel={reel}
+            onClose={() => setShowMenu(false)}
+            onDeleted={() => navigate('/reels')}
           />
         )}
       </AnimatePresence>

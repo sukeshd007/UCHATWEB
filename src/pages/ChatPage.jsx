@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   ArrowLeft, Phone, Video, Send, Image, Smile,
   Check, CheckCheck, Loader2, Download, WifiOff,
-  Mic, MicOff, Camera, X, Play, Pause, Square, Eye, RefreshCw
+  Mic, Camera, X, Play, Pause, Eye,
+  Lock, ChevronUp, Trash2
 } from 'lucide-react';
 import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,7 +15,7 @@ import {
   getUserByUid, addReaction, deleteMessage,
   markMessagesSeenByUser, subscribeToAllMessagesAdmin
 } from '../firebase/firestoreService';
-import { uploadChatMedia } from '../firebase/storageService';
+import { uploadChatMedia, uploadVoiceNote } from '../firebase/storageService';
 import { isUserOnline } from '../firebase/authService';
 // localDB removed — all data flows through Firestore real-time
 import Avatar from '../components/common/Avatar';
@@ -42,13 +43,44 @@ function VoicePlayer({ url, isMine }) {
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [ready, setReady] = useState(false);
   const audioRef = useRef(null);
 
   useEffect(() => {
     const audio = new Audio(url);
+    audio.preload = 'metadata';
     audioRef.current = audio;
-    audio.onloadedmetadata = () => setDuration(audio.duration);
-    audio.ontimeupdate = () => setProgress(audio.currentTime / audio.duration);
+    setReady(false);
+    setDuration(0);
+
+    // BUGFIX: Chromium-based browsers report `duration === Infinity` for
+    // blobs produced by MediaRecorder (the webm container is written without
+    // a duration header since it's streamed, not seekable, while recording).
+    // The fix is the standard workaround: seek far past the end, which forces
+    // the browser to actually scan the file and fire `durationchange` with
+    // the real value, then reset playback to the start. Without this, the
+    // UI showed "Infinity:NaN" / a frozen 0:00 timer and a progress bar that
+    // never visibly moved no matter how far playback had gotten.
+    const fixDuration = () => {
+      if (audio.duration === Infinity || isNaN(audio.duration)) {
+        audio.currentTime = 1e7;
+        const onChange = () => {
+          audio.currentTime = 0;
+          setDuration(audio.duration === Infinity || isNaN(audio.duration) ? 0 : audio.duration);
+          setReady(true);
+          audio.removeEventListener('durationchange', onChange);
+        };
+        audio.addEventListener('durationchange', onChange);
+      } else {
+        setDuration(audio.duration || 0);
+        setReady(true);
+      }
+    };
+
+    audio.onloadedmetadata = fixDuration;
+    audio.ontimeupdate = () => {
+      if (audio.duration && isFinite(audio.duration)) setProgress(audio.currentTime / audio.duration);
+    };
     audio.onended = () => { setPlaying(false); setProgress(0); };
     return () => { audio.pause(); audio.src = ''; };
   }, [url]);
@@ -92,7 +124,7 @@ function VoicePlayer({ url, isMine }) {
           }} />
         </div>
         <div style={{ fontSize: 11, marginTop: 3, color: isMine ? 'rgba(255,255,255,0.7)' : 'var(--text-tertiary)' }}>
-          {duration ? fmtTime(duration) : '0:00'}
+          {ready && duration ? fmtTime(duration) : '0:00'}
         </div>
       </div>
       <Mic size={14} style={{ color: isMine ? 'rgba(255,255,255,0.6)' : 'var(--text-tertiary)', flexShrink: 0 }} />
@@ -118,13 +150,28 @@ export default function ChatPage() {
   const [syncStatus, setSyncStatus] = useState('synced'); // 'synced' | 'syncing' | 'error'
   const isAdmin = userProfile?.role === 'admin' || userProfile?.role === 'owner';
 
-  // Voice recording
+  // Voice recording (WhatsApp-style: hold to record, slide left to cancel,
+  // slide up to lock into hands-free recording)
   const [recording, setRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
   const [audioBlob, setAudioBlob] = useState(null);
+  const [voiceLocked, setVoiceLocked] = useState(false);
+  const [dragX, setDragX] = useState(0);   // live horizontal slide offset (≤0)
+  const [dragY, setDragY] = useState(0);   // live vertical slide offset (≤0)
+  const [waveLevels, setWaveLevels] = useState(() => Array(24).fill(3));
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioStreamRef = useRef(null);
   const recordTimerRef = useRef(null);
+  const recordStartRef = useRef(0);
+  const recordedDurationRef = useRef(0);
+  const cancelledRef = useRef(false);
+  const autoSendRef = useRef(false);
+  const pointerStartRef = useRef({ x: 0, y: 0 });
+  const recordingRef = useRef(false); // synchronous guard against double-start
+  const audioCtxRef = useRef(null);
+  const analyserRef = useRef(null);
+  const waveRafRef = useRef(null);
 
   const bottomRef = useRef();
   const inputRef = useRef();
@@ -246,54 +293,209 @@ export default function ChatPage() {
     finally { setSending(false); e.target.value = ''; }
   };
 
-  const startRecording = async () => {
+  // Picks the best codec the browser actually supports. Chrome/Firefox/Android
+  // support webm+opus; Safari/iOS support neither webm nor opus, only mp4/aac —
+  // the old code hardcoded 'audio/webm' with no fallback, which silently
+  // produced broken/empty recordings on iOS Safari.
+  const pickVoiceMimeType = () => {
+    if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac'];
+    return candidates.find(t => MediaRecorder.isTypeSupported(t)) || '';
+  };
+
+  // Lightweight live amplitude bars via Web Audio's AnalyserNode — purely
+  // visual feedback while holding the mic, not used for the actual recording.
+  const startWaveform = (stream) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      const tick = () => {
+        analyser.getByteFrequencyData(data);
+        const bars = 24;
+        const step = Math.floor(data.length / bars) || 1;
+        const next = Array.from({ length: bars }, (_, i) => Math.max(3, Math.min(28, (data[i * step] || 0) / 8)));
+        setWaveLevels(next);
+        waveRafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch (e) {
+      // Waveform is cosmetic only — never let it block recording itself
+      console.warn('Waveform unavailable:', e.message);
+    }
+  };
+
+  const stopWaveform = () => {
+    if (waveRafRef.current) cancelAnimationFrame(waveRafRef.current);
+    waveRafRef.current = null;
+    if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+    audioCtxRef.current = null;
+    analyserRef.current = null;
+    setWaveLevels(Array(24).fill(3));
+  };
+
+  const startRecording = async () => {
+    // Synchronous ref guard — state-based checks alone aren't reliable against
+    // back-to-back pointer events firing within the same tick.
+    if (recordingRef.current) return;
+    recordingRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      });
+      audioStreamRef.current = stream;
       audioChunksRef.current = [];
-      const mr = new MediaRecorder(stream);
+      cancelledRef.current = false;
+      autoSendRef.current = false;
+
+      const mimeType = pickVoiceMimeType();
+      const options = { audioBitsPerSecond: 128000 }; // match real recorder quality, not the ~32kbps browser default
+      if (mimeType) options.mimeType = mimeType;
+
+      const mr = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mr;
       mr.ondataavailable = e => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
       mr.onstop = () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(blob);
         stream.getTracks().forEach(t => t.stop());
+        stopWaveform();
+        if (cancelledRef.current || audioChunksRef.current.length === 0) {
+          setAudioBlob(null);
+        } else {
+          const blob = new Blob(audioChunksRef.current, { type: mr.mimeType || mimeType || 'audio/webm' });
+          setAudioBlob(blob);
+        }
       };
-      mr.start();
+      mr.start(250); // periodic chunks so a quick tap still flushes audio data
+
       setRecording(true);
+      setVoiceLocked(false);
+      setDragX(0); setDragY(0);
+      recordStartRef.current = Date.now();
       setRecordSecs(0);
-      recordTimerRef.current = setInterval(() => setRecordSecs(s => s + 1), 1000);
+      // BUGFIX: was `setRecordSecs(s => s + 1)` on a plain setInterval — if the
+      // interval was ever created twice (the old mouse+touch dual-handler bug
+      // below) it counted at 2x real speed. Deriving elapsed time from a wall
+      // clock timestamp instead means even a duplicate timer can't desync it,
+      // and it stays correct if the tab is briefly throttled in the background.
+      recordTimerRef.current = setInterval(() => {
+        setRecordSecs(Math.floor((Date.now() - recordStartRef.current) / 1000));
+      }, 250);
+
+      startWaveform(stream);
     } catch {
       toast.error('Microphone permission denied');
+    } finally {
+      recordingRef.current = false;
     }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && recording) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
-      setRecording(false);
-      clearInterval(recordTimerRef.current);
     }
+    recordedDurationRef.current = Math.floor((Date.now() - recordStartRef.current) / 1000);
+    clearInterval(recordTimerRef.current);
+    setRecording(false);
+    mediaRecorderRef.current = null;
   };
 
   const cancelRecording = () => {
-    if (mediaRecorderRef.current && recording) mediaRecorderRef.current.stop();
+    cancelledRef.current = true;
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    } else if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach(t => t.stop());
+      stopWaveform();
+    }
+    clearInterval(recordTimerRef.current);
     setRecording(false);
+    setVoiceLocked(false);
     setAudioBlob(null);
     setRecordSecs(0);
-    clearInterval(recordTimerRef.current);
+    setDragX(0); setDragY(0);
+    mediaRecorderRef.current = null;
     audioChunksRef.current = [];
   };
 
-  const sendVoiceMessage = async () => {
-    if (!audioBlob) return;
+  // Stops recording and sends as soon as the blob is ready (mr.onstop is
+  // asynchronous, so we can't just read audioBlob here — see the effect below).
+  const finishAndSend = () => {
+    if (recordSecs < 1) { cancelRecording(); toast('Hold to record a voice message', { icon: '🎙️' }); return; }
+    autoSendRef.current = true;
+    stopRecording();
+  };
+
+  const sendVoiceMessage = async (blobOverride) => {
+    const blob = blobOverride || audioBlob;
+    if (!blob) return;
     setSending(true);
     try {
-      const file = new File([audioBlob], 'voice.webm', { type: 'audio/webm' });
-      const result = await uploadChatMedia(file, chatId);
-      await sendMessage(chatId, uid, { text: '', type: 'voice', mediaUrl: result.url });
+      // BUGFIX: this used to call uploadChatMedia(file, chatId), which routes
+      // any non-video file through validateImage() — an image-only whitelist
+      // (jpeg/png/gif/webp). An 'audio/webm' blob always failed that check,
+      // so every single voice message send threw "Only JPEG, PNG, GIF, or
+      // WebP images are allowed" and landed in the catch block below. The
+      // dedicated uploadVoiceNote() helper (storageService.js) already
+      // existed for exactly this and was simply never wired up here.
+      const result = await uploadVoiceNote(blob, uid);
+      await sendMessage(chatId, uid, {
+        text: '', type: 'voice', mediaUrl: result.url,
+        voiceDuration: recordedDurationRef.current
+      });
       toast.success('Voice message sent!');
-    } catch { toast.error('Failed to send voice message'); }
-    finally { setSending(false); setAudioBlob(null); setRecordSecs(0); }
+    } catch {
+      toast.error('Failed to send voice message');
+    } finally {
+      setSending(false);
+      setAudioBlob(null);
+      setRecordSecs(0);
+      setVoiceLocked(false);
+    }
+  };
+
+  // Fires once mr.onstop has produced the blob, only when the user actually
+  // asked to send (release-to-send or the Send button in locked mode).
+  useEffect(() => {
+    if (audioBlob && autoSendRef.current) {
+      autoSendRef.current = false;
+      sendVoiceMessage(audioBlob);
+    }
+  }, [audioBlob]);
+
+  const CANCEL_SLIDE_PX = 90;
+  const LOCK_SLIDE_PX = 70;
+
+  const handleMicPointerDown = (e) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    pointerStartRef.current = { x: e.clientX, y: e.clientY };
+    startRecording();
+  };
+
+  const handleMicPointerMove = (e) => {
+    if (!recording || voiceLocked) return;
+    const dx = e.clientX - pointerStartRef.current.x;
+    const dy = e.clientY - pointerStartRef.current.y;
+    if (dy < -LOCK_SLIDE_PX) {
+      setVoiceLocked(true);
+      setDragX(0); setDragY(0);
+      return;
+    }
+    setDragX(Math.max(-120, Math.min(0, dx)));
+    setDragY(Math.max(-LOCK_SLIDE_PX, Math.min(0, dy)));
+    if (dx < -CANCEL_SLIDE_PX) cancelRecording();
+  };
+
+  const handleMicPointerUp = () => {
+    if (!recording || voiceLocked) return; // locked mode is finished via the explicit Send/Trash buttons
+    setDragX(0); setDragY(0);
+    finishAndSend();
   };
 
   const fmtTime = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -321,7 +523,7 @@ export default function ChatPage() {
   const handleDeleteMsg = async (msg, forEveryone) => {
     setMsgMenu(null);
     try {
-      await deleteMessage(msg.id, forEveryone);
+      await deleteMessage(msg.id, uid, forEveryone);
       if (!forEveryone) {
         setMessages(prev => prev.filter(m => m.id !== msg.id));
       }
@@ -554,37 +756,70 @@ export default function ChatPage() {
         )}
       </AnimatePresence>
 
-      {/* Audio preview */}
-      <AnimatePresence>
-        {audioBlob && !recording && (
-          <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }}
-            style={{ borderTop: '1px solid var(--border-subtle)', padding: '10px 12px', background: 'var(--surface-2)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <VoicePlayer url={URL.createObjectURL(audioBlob)} isMine={false} />
-            <button onClick={() => setAudioBlob(null)} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer' }}><X size={18} /></button>
-            <button onClick={sendVoiceMessage} disabled={sending}
-              style={{ padding: '8px 16px', borderRadius: 10, background: 'linear-gradient(135deg,#7C3AED,#2563EB)', color: 'white', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: 13 }}>
-              {sending ? <Loader2 size={16} className="animate-spin" /> : 'Send'}
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Input area */}
       <div style={{
         borderTop: '1px solid var(--border-subtle)', padding: '8px 12px',
         background: 'var(--bg-primary)', paddingBottom: 'max(8px, env(safe-area-inset-bottom))'
       }}>
         {recording ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 10, height: 10, borderRadius: '50%', background: '#EF4444', animation: 'pulse 1s infinite' }} />
-            <span style={{ flex: 1, fontSize: 15, fontWeight: 600, color: 'var(--text-primary)' }}>
-              Recording… {fmtTime(recordSecs)}
-            </span>
-            <button onClick={cancelRecording} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: 8 }}><X size={20} /></button>
-            <button onClick={stopRecording}
-              style={{ width: 42, height: 42, borderRadius: '50%', background: '#EF4444', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer' }}>
-              <Square size={18} />
-            </button>
+          <div style={{ position: 'relative' }}>
+            {/* Lock hint — fades in as the user slides up, sits above the bar */}
+            {!voiceLocked && (
+              <div style={{
+                position: 'absolute', right: 4, bottom: 50,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+                opacity: Math.min(1, 0.4 + Math.abs(dragY) / LOCK_SLIDE_PX),
+                pointerEvents: 'none'
+              }}>
+                <div style={{
+                  width: 34, height: 34, borderRadius: 17, background: 'var(--surface-2)',
+                  border: '1px solid var(--border-default)', display: 'flex',
+                  alignItems: 'center', justifyContent: 'center',
+                  transform: `translateY(${dragY}px)`
+                }}>
+                  <Lock size={15} style={{ color: 'var(--text-secondary)' }} />
+                </div>
+                <ChevronUp size={13} style={{ color: 'var(--text-tertiary)' }} />
+              </div>
+            )}
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minHeight: 42 }}>
+              <div style={{ width: 9, height: 9, borderRadius: '50%', background: '#EF4444', animation: 'pulse 1s infinite', flexShrink: 0 }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', flexShrink: 0, fontVariantNumeric: 'tabular-nums', minWidth: 38 }}>
+                {fmtTime(recordSecs)}
+              </span>
+
+              <div style={{
+                flex: 1, display: 'flex', alignItems: 'center', gap: 2, height: 28, overflow: 'hidden',
+                transform: `translateX(${dragX}px)`, transition: dragX === 0 ? 'transform 0.15s ease-out' : 'none'
+              }}>
+                {voiceLocked ? (
+                  waveLevels.map((h, i) => (
+                    <div key={i} style={{ width: 3, minWidth: 3, height: h, background: '#7C3AED', borderRadius: 2, transition: 'height 0.08s' }} />
+                  ))
+                ) : (
+                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>← Slide to cancel</span>
+                )}
+              </div>
+
+              {voiceLocked ? (
+                <>
+                  <button onClick={cancelRecording} title="Delete recording"
+                    style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: 8, flexShrink: 0 }}>
+                    <Trash2 size={20} />
+                  </button>
+                  <button onClick={finishAndSend} disabled={sending} title="Send"
+                    style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#7C3AED,#2563EB)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', flexShrink: 0 }}>
+                    {sending ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
+                  </button>
+                </>
+              ) : (
+                <button onClick={cancelRecording} title="Cancel"
+                  style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', padding: 8, flexShrink: 0 }}>
+                  <X size={20} />
+                </button>
+              )}
+            </div>
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
@@ -635,12 +870,12 @@ export default function ChatPage() {
               </button>
             ) : (
               <button
-                onMouseDown={startRecording}
-                onMouseUp={stopRecording}
-                onTouchStart={startRecording}
-                onTouchEnd={stopRecording}
+                onPointerDown={handleMicPointerDown}
+                onPointerMove={handleMicPointerMove}
+                onPointerUp={handleMicPointerUp}
+                onPointerCancel={cancelRecording}
                 title="Hold to record voice message"
-                style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#7C3AED,#2563EB)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', flexShrink: 0 }}
+                style={{ width: 42, height: 42, borderRadius: '50%', background: 'linear-gradient(135deg,#7C3AED,#2563EB)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', cursor: 'pointer', flexShrink: 0, touchAction: 'none' }}
               >
                 <Mic size={18} />
               </button>

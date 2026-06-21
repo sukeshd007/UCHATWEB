@@ -27,6 +27,31 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 // Use redirect on mobile (popups blocked on Android/iOS browsers), popup on desktop
 const isMobile = () => /Android|iPhone|iPad|iPod|webOS|BlackBerry/i.test(navigator.userAgent);
 
+// ─── Referral capture (invite-friends feature) ────────────────────────────────
+// Call once on app boot. First-touch attribution: if a ref code is already
+// stored, a later visit (e.g. without ?ref=) won't overwrite it.
+const REFERRAL_KEY = 'uchat_referral_code';
+
+export const captureReferralCode = () => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get('ref');
+    if (ref && !sessionStorage.getItem(REFERRAL_KEY)) {
+      sessionStorage.setItem(REFERRAL_KEY, ref);
+    }
+  } catch {}
+};
+
+const consumeReferralCode = () => {
+  try {
+    const ref = sessionStorage.getItem(REFERRAL_KEY);
+    sessionStorage.removeItem(REFERRAL_KEY);
+    return ref;
+  } catch {
+    return null;
+  }
+};
+
 // ─── Generate Guest Username ──────────────────────────────────────────────────
 // Uses a zero-padded 7-digit number derived from the current timestamp.
 // No Firestore counter doc needed — uid is appended so collisions are impossible.
@@ -231,6 +256,7 @@ export const ensureUserDocument = async (user) => {
   const snap = await getDoc(ref);
   const isOwnerEmail = OWNER_EMAILS_INTERNAL.includes(user.email);
   if (!snap.exists()) {
+    const referredBy = consumeReferralCode();
     await setDoc(ref, {
       uid: user.uid,
       email: user.email || null,
@@ -254,9 +280,19 @@ export const ensureUserDocument = async (user) => {
       isPrivate: false,
       isGuest: false,
       profileSetupComplete: false,
+      closeFriends: [],
+      blockedUsers: [],
+      inviteCount: 0,
+      referredBy: referredBy || null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+    if (referredBy) {
+      // Best-effort — a failed referral credit should never block account creation
+      import('./firestoreService')
+        .then(({ recordInviteSignup }) => recordInviteSignup(referredBy, user.uid))
+        .catch(() => {});
+    }
   } else {
     const data = snap.data();
     const repairs = {};
@@ -300,11 +336,11 @@ export const updateOnlineStatus = async (uid, isOnline) => {
 };
 
 // Treats a user as online only if onlineStatus is true AND their lastSeen
-// heartbeat is recent (within thresholdMs). This protects against permanently
-// "stuck online" users caused by app-kill, phone lock, or network loss on
-// mobile — none of which reliably fire a `beforeunload` event.
+// heartbeat is recent (within thresholdMs) AND they haven't opted out of
+// showing activity status (Settings → Activity in Friends feed).
 export const isUserOnline = (profile, thresholdMs = 90 * 1000) => {
   if (!profile?.onlineStatus) return false;
+  if (profile.activityStatusVisible === false) return false;
   const lastSeen = profile.lastSeen?.toDate ? profile.lastSeen.toDate() : null;
   if (!lastSeen) return false;
   return (Date.now() - lastSeen.getTime()) < thresholdMs;

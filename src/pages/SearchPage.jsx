@@ -318,11 +318,13 @@ const ExploreReel = ({ reel }) => {
       onMouseEnter={() => { setHovered(true); videoRef.current?.play?.(); }}
       onMouseLeave={() => { setHovered(false); if (videoRef.current) { videoRef.current.pause(); videoRef.current.currentTime = 0; } }}
     >
-      {/* Thumbnail (first frame) via video */}
+      {/* Static cover until hovered (uses the uploaded thumbnail if the
+          creator set one), then plays the real video on hover */}
       {reel.videoUrl && (
         <video
           ref={videoRef}
           src={reel.videoUrl}
+          poster={reel.thumbnailUrl || undefined}
           muted
           loop
           playsInline

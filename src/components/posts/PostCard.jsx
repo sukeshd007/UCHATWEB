@@ -13,6 +13,7 @@ import {
   getUserByUid, sharePost, incrementPostViews
 } from '../../firebase/firestoreService';
 import { isUserOnline } from '../../firebase/authService';
+import { applyDataSaverTransform } from '../../utils/cloudinaryDownload';
 import Avatar from '../common/Avatar';
 import { VerifiedBadge } from '../common/VerifiedBadge';
 import PostMenu from './PostMenu';
@@ -145,7 +146,7 @@ export default function PostCard({ post }) {
               <div key={i} className={styles.mediaSlide}>
                 {post.mediaType === 'video' || url.includes('.mp4') ? (
                   <video
-                    src={url}
+                    src={applyDataSaverTransform(url)}
                     className={styles.mediaItem}
                     controls
                     playsInline
@@ -153,7 +154,7 @@ export default function PostCard({ post }) {
                   />
                 ) : (
                   <img
-                    src={url}
+                    src={applyDataSaverTransform(url)}
                     alt={`Post media ${i + 1}`}
                     className={styles.mediaItem}
                     loading="lazy"

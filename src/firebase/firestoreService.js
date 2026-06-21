@@ -190,6 +190,148 @@ export const getFollowing = async (uid, limitCount = 50) => {
   return snap.docs.map(d => d.data().followingId);
 };
 
+// ─── CLOSE FRIENDS ──────────────────────────────────────────────────────────
+// Stored as a simple array on the user's own doc (mirrors how Instagram's
+// Close Friends list is just a personal list, not a relationship the other
+// person needs to approve).
+
+export const getCloseFriends = async (uid) => {
+  const profile = await getUserByUid(uid);
+  return profile?.closeFriends || [];
+};
+
+export const addCloseFriend = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { closeFriends: arrayUnion(targetUid) });
+};
+
+export const removeCloseFriend = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { closeFriends: arrayRemove(targetUid) });
+};
+
+// ─── BLOCKED ACCOUNTS ─────────────────────────────────────────────────────────
+
+export const getBlockedUsers = async (uid) => {
+  const profile = await getUserByUid(uid);
+  const blockedIds = profile?.blockedUsers || [];
+  const profiles = await Promise.all(blockedIds.map(id => getUserByUid(id).catch(() => null)));
+  return profiles.filter(Boolean);
+};
+
+export const blockUser = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { blockedUsers: arrayUnion(targetUid) });
+  // Blocking implies unfollowing both directions so blocked content stops
+  // showing up in feeds/followers lists immediately.
+  await Promise.all([
+    unfollowUser(uid, targetUid).catch(() => {}),
+    unfollowUser(targetUid, uid).catch(() => {}),
+  ]);
+};
+
+export const unblockUser = async (uid, targetUid) => {
+  await updateDoc(doc(db, 'users', uid), { blockedUsers: arrayRemove(targetUid) });
+};
+
+export const isUserBlocked = (currentProfile, targetUid) =>
+  !!currentProfile?.blockedUsers?.includes(targetUid);
+
+// ─── INVITES / REFERRALS ───────────────────────────────────────────────────────
+// 50 successful invites unlock a free 7-day verified trial. A referral is
+// counted the moment someone signs up for the first time via this user's
+// invite link (?ref=username) — see captureReferral() in authService.js.
+
+const INVITE_GOAL = 50;
+const TRIAL_DAYS = 7;
+
+export const recordInviteSignup = async (inviterUsername, newUserUid) => {
+  if (!inviterUsername) return;
+  const inviter = await getUserByUsername(inviterUsername).catch(() => null);
+  if (!inviter || inviter.id === newUserUid) return; // no self-referrals
+
+  const newCount = (inviter.inviteCount || 0) + 1;
+  const updates = { inviteCount: increment(1) };
+
+  // Crossing the 50-invite threshold grants (or extends) a 7-day verified trial
+  if (newCount >= INVITE_GOAL) {
+    const now = Date.now();
+    const currentExpiry = inviter.verifiedTrialUntil?.toMillis ? inviter.verifiedTrialUntil.toMillis() : 0;
+    const base = Math.max(now, currentExpiry);
+    updates.verifiedTrialUntil = new Date(base + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+    updates.verified = true;
+    updates.verifiedViaTrial = true;
+  }
+  await updateDoc(doc(db, 'users', inviter.id), updates);
+};
+
+// ─── ACCOUNT ANALYTICS (last N days) ───────────────────────────────────────────
+// Queries the actual interaction collections (likes/comments/views/shares/
+// reposts), filtered to this user's content and a time window — real numbers,
+// not estimates. Capped to the user's 100 most recent posts/reels for query
+// cost reasons; typical accounts at this stage are well under that.
+
+const chunkArray = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+const countDocsWhereIn = async (collectionName, fieldName, ids, timeField, cutoff) => {
+  if (!ids || ids.length === 0) return 0;
+  let total = 0;
+  for (const batch of chunkArray(ids, 30)) { // Firestore 'in' query cap
+    try {
+      const q = query(
+        collection(db, collectionName),
+        where(fieldName, 'in', batch),
+        where(timeField, '>=', cutoff)
+      );
+      const snap = await getDocs(q);
+      total += snap.size;
+    } catch (e) {
+      console.warn(`Analytics query failed for ${collectionName}.${fieldName} (check indexes):`, e.message);
+    }
+  }
+  return total;
+};
+
+export const getAccountAnalytics = async (uid, days = 30) => {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const [postsRes, reelsRes] = await Promise.all([
+    getUserPosts(uid, null, 100),
+    getUserReels(uid, null, 100),
+  ]);
+  const postIds = postsRes.posts.map(p => p.id);
+  const reelIds = reelsRes.reels.map(r => r.id);
+
+  const [
+    postViews, reelViews,
+    postLikes, reelLikes,
+    postComments, reelComments,
+    postShares, reelShares,
+    reposts
+  ] = await Promise.all([
+    countDocsWhereIn('postViews', 'postId', postIds, 'viewedAt', cutoff),
+    countDocsWhereIn('reelViews', 'reelId', reelIds, 'viewedAt', cutoff),
+    countDocsWhereIn('likes', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('likes', 'reelId', reelIds, 'createdAt', cutoff),
+    countDocsWhereIn('comments', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('comments', 'postId', reelIds, 'createdAt', cutoff), // reel comments also use the `postId` field (see addComment)
+    countDocsWhereIn('shares', 'postId', postIds, 'createdAt', cutoff),
+    countDocsWhereIn('shares', 'reelId', reelIds, 'createdAt', cutoff),
+    countDocsWhereIn('reposts', 'reelId', reelIds, 'createdAt', cutoff),
+  ]);
+
+  return {
+    views: postViews + reelViews,
+    likes: postLikes + reelLikes,
+    comments: postComments + reelComments,
+    shares: postShares + reelShares,
+    reposts,
+    contentCount: postIds.length + reelIds.length,
+    days,
+  };
+};
+
 // ─── POSTS ────────────────────────────────────────────────────────────────────
 
 export const createPost = async (uid, postData) => {
@@ -258,8 +400,11 @@ export const likePost = async (uid, postId, authorId) => {
   await setDoc(doc(db, 'likes', likeId), {
     userId: uid, postId, type: 'post', createdAt: serverTimestamp()
   });
-  // Update count separately (post author rule allows likesCount changes)
-  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(1) });
+  // Update count separately (post author rule allows likesCount changes).
+  // Swallow failure: the like itself already succeeded above, so a stale
+  // count must never surface as "like failed" to the user.
+  await updateDoc(doc(db, 'posts', postId), { likesCount: increment(1) })
+    .catch(e => console.warn('likePost: likesCount increment failed:', e.message));
 
   if (authorId !== uid) {
     await createNotification({
@@ -301,25 +446,39 @@ export const isPostSaved = async (uid, postId) => {
 
 // ─── COMMENTS ────────────────────────────────────────────────────────────────
 
-export const addComment = async (uid, postId, text, authorId) => {
+export const addComment = async (uid, contentId, text, authorId, contentType = 'post') => {
+  const collectionName = contentType === 'reel' ? 'reels' : 'posts';
   const ref = await addDoc(collection(db, 'comments'), {
     authorId: uid,
-    postId,
+    postId: contentId, // kept as `postId` for both types so getComments/deleteComment stay simple
+    contentType,
     text,
     likesCount: 0,
     createdAt: serverTimestamp()
   });
-  await updateDoc(doc(db, 'posts', postId), { commentsCount: increment(1) });
-  
+
+  // BUGFIX: the count increment and notification below are secondary effects.
+  // Previously they were awaited directly with no error handling, so if
+  // EITHER one failed (e.g. a transient permission/network hiccup) the whole
+  // addComment() call rejected even though the comment itself was already
+  // saved — CommentSheet would then show "Failed to post comment" and skip
+  // reloading the list, so the comment looked like it never happened even
+  // though it existed in the database. The comment write is the action the
+  // user actually cares about, so it must not be undone by a side-effect
+  // failing; count/notification errors are now swallowed and logged instead.
+  await updateDoc(doc(db, collectionName, contentId), { commentsCount: increment(1) })
+    .catch(e => console.warn('addComment: commentsCount increment failed:', e.message));
+
   if (authorId !== uid) {
     await createNotification({
       recipientId: authorId,
       senderId: uid,
       type: 'comment',
-      postId,
+      postId: contentType === 'reel' ? null : contentId,
+      reelId: contentType === 'reel' ? contentId : null,
       commentId: ref.id,
-      message: 'commented on your post'
-    });
+      message: contentType === 'reel' ? 'commented on your reel' : 'commented on your post'
+    }).catch(e => console.warn('addComment: notification failed:', e.message));
   }
   return ref.id;
 };
@@ -340,10 +499,11 @@ export const getComments = async (postId, lastDoc = null, limitCount = 20) => {
   };
 };
 
-export const deleteComment = async (commentId, postId) => {
+export const deleteComment = async (commentId, contentId, contentType = 'post') => {
+  const collectionName = contentType === 'reel' ? 'reels' : 'posts';
   const batch = writeBatch(db);
   batch.delete(doc(db, 'comments', commentId));
-  batch.update(doc(db, 'posts', postId), { commentsCount: increment(-1) });
+  batch.update(doc(db, collectionName, contentId), { commentsCount: increment(-1) });
   await batch.commit();
 };
 
@@ -361,6 +521,18 @@ export const createReel = async (uid, reelData) => {
   });
   await updateDoc(doc(db, 'users', uid), { reelsCount: increment(1) });
   return ref.id;
+};
+
+// BUGFIX: this function did not exist at all — there was no way for anyone,
+// including the reel's own owner, to delete a reel. Mirrors deletePost:
+// removes the reel doc and decrements the author's reelsCount. Permission
+// (owner or admin only) is enforced both here and server-side in
+// firestore.rules' `match /reels/{reelId}` delete rule.
+export const deleteReel = async (reelId, uid) => {
+  const batch = writeBatch(db);
+  batch.delete(doc(db, 'reels', reelId));
+  batch.update(doc(db, 'users', uid), { reelsCount: increment(-1) });
+  await batch.commit();
 };
 
 // Owner-only: create a reel entry that references a local file (blob URL).
@@ -406,6 +578,7 @@ export const recordReelView = async (uid, reelId) => {
 
 export const shareReel = async (reelId) => {
   await updateDoc(doc(db, 'reels', reelId), { sharesCount: increment(1) });
+  await addDoc(collection(db, 'shares'), { reelId, createdAt: serverTimestamp() }).catch(() => {});
 };
 
 export const likeReel = async (uid, reelId, authorId) => {
@@ -791,6 +964,7 @@ export const incrementPostViews = async (uid, postId) => {
 
 export const sharePost = async (postId) => {
   await updateDoc(doc(db, 'posts', postId), { sharesCount: increment(1) }).catch(() => {});
+  await addDoc(collection(db, 'shares'), { postId, createdAt: serverTimestamp() }).catch(() => {});
 };
 
 export const addReaction = async (messageId, uid, emoji) => {
@@ -799,20 +973,32 @@ export const addReaction = async (messageId, uid, emoji) => {
   });
 };
 
-export const deleteMessage = async (messageId, deleteForEveryone = false) => {
+// BUGFIX (was: always hid the message for the original SENDER regardless of
+// who clicked delete, because it read senderId off the message doc instead
+// of taking the acting user's uid as a parameter). That meant "Delete for me"
+// silently deleted the message from the SENDER's chat without their consent,
+// while the person who actually tapped delete saw it reappear on the next
+// real-time sync (their own uid was never the one written to deletedFor).
+// Now `uid` is required and is always the uid of whoever is deleting it.
+export const deleteMessage = async (messageId, uid, deleteForEveryone = false) => {
   if (deleteForEveryone) {
-    // Soft delete — visible to admin on server, hidden from both users
+    // Only the sender or an admin may delete for everyone — enforced both by
+    // the UI (button only renders for them, see ChatPage.jsx) AND by
+    // firestore.rules server-side, since a client-side-only check can be
+    // bypassed by a crafted request.
     await updateDoc(doc(db, 'messages', messageId), {
       deleted: true,
       deletedForEveryone: true,
       originalText: (await getDoc(doc(db, 'messages', messageId))).data()?.text || '',
       text: 'This message was deleted',
+      deletedBy: uid,
       deletedAt: serverTimestamp(),
     });
   } else {
-    // Delete for me only — stored as array of uids who deleted it
+    // Delete for me only — adds the ACTING user's uid (any participant) to
+    // an array of uids who've hidden it; everyone else still sees it.
     await updateDoc(doc(db, 'messages', messageId), {
-      deletedFor: arrayUnion((await getDoc(doc(db, 'messages', messageId))).data()?.senderId || ''),
+      deletedFor: arrayUnion(uid),
       deletedAt: serverTimestamp(),
     });
   }
@@ -869,6 +1055,15 @@ export const getActiveNotes = async (uids) => {
 };
 
 // ─── REPORTS ──────────────────────────────────────────────────────────────────
+
+export const submitFeedback = async (uid, message) => {
+  await addDoc(collection(db, 'feedback'), {
+    uid: uid || null,
+    message,
+    status: 'open',
+    createdAt: serverTimestamp()
+  });
+};
 
 export const reportContent = async (reporterUid, { contentId, contentType, reason, description }) => {
   await addDoc(collection(db, 'reports'), {

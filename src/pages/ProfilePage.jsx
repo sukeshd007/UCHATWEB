@@ -11,7 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   getUserByUsername, getUserPosts, getUserReels, followUser, unfollowUser,
   isFollowing, getOrCreateChat, getFollowers, getFollowing, getUserByUid,
-  getUserReposts, getSavedReels
+  getUserReposts, getSavedReels, blockUser, reportContent
 } from '../firebase/firestoreService';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
@@ -161,6 +161,28 @@ export default function ProfilePage() {
     finally { setFollowListLoading(false); }
   };
 
+  const handleBlock = async () => {
+    if (!uid || !profile?.id) return;
+    if (!window.confirm(`Block @${profile.username}? They won\u2019t be able to find your profile, posts, or message you, and you\u2019ll stop following each other.`)) return;
+    try {
+      await blockUser(uid, profile.id);
+      toast.success(`@${profile.username} has been blocked`);
+      navigate('/'); // Leave their profile — nothing left to see here once blocked
+    } catch {
+      toast.error('Could not block this account \u2014 try again');
+    }
+  };
+
+  const handleReport = async () => {
+    if (!uid || !profile?.id) return;
+    try {
+      await reportContent(uid, { contentId: profile.id, contentType: 'user', reason: 'reported_from_profile', description: '' });
+      toast.success('Report submitted. Thanks for letting us know.');
+    } catch {
+      toast.error('Could not submit report \u2014 try again');
+    }
+  };
+
   if (loading || !profile) return <ProfileSkeleton />;
 
   const menuItems = isOwnProfile ? [
@@ -171,8 +193,8 @@ export default function ProfilePage() {
     { label: following ? 'Unfollow' : 'Follow', icon: following ? <UserX size={16} /> : <UserPlus size={16} />, action: handleFollow },
     { label: notifOn ? 'Turn Off Notifications' : 'Turn On Notifications', icon: notifOn ? <BellOff size={16} /> : <Bell size={16} />, action: () => setNotifOn(v => !v) },
     { label: 'Share Profile', icon: <Share2 size={16} />, action: () => { navigator.clipboard?.writeText(window.location.href); toast.success('Link copied!'); } },
-    { label: 'Report', icon: <Flag size={16} />, action: () => toast('Report submitted'), danger: true },
-    { label: 'Block', icon: <UserX size={16} />, action: () => toast('User blocked'), danger: true },
+    { label: 'Report', icon: <Flag size={16} />, action: handleReport, danger: true },
+    { label: 'Block', icon: <UserX size={16} />, action: handleBlock, danger: true },
   ];
 
   return (

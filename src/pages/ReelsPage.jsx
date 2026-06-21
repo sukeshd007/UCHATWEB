@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Heart, MessageCircle, Share2, Bookmark, Repeat2,
   Volume2, VolumeX, Play, Plus, ChevronUp, ChevronDown, Eye,
-  Link2, X, Send
+  Link2, X, Send, Download, MoreVertical
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -14,11 +14,13 @@ import {
   saveReel, unsaveReel, isReelSaved,
   repostReel, unrepostReel, isReelReposted
 } from '../firebase/firestoreService';
+import { buildWatermarkedDownloadUrl, triggerDownload, getDownloadQualityPref, applyDataSaverTransform } from '../utils/cloudinaryDownload';
 import { getLocalReelVideo } from '../utils/localDB';
 import Avatar from '../components/common/Avatar';
 import { VerifiedBadge } from '../components/common/VerifiedBadge';
 import CreateReelModal from '../components/reels/CreateReelModal';
 import CommentSheet from '../components/posts/CommentSheet';
+import ReelMenu from '../components/posts/ReelMenu';
 import toast from 'react-hot-toast';
 
 function AnimCount({ value }) {
@@ -46,8 +48,9 @@ function formatCount(n) {
 }
 
 // ── Share Sheet ──────────────────────────────────────────────────────────────
-function ShareSheet({ url, title, onClose, onShared }) {
+function ShareSheet({ url, title, videoUrl, creatorUsername, onClose, onShared }) {
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const handleCopy = async () => {
     try {
@@ -66,6 +69,21 @@ function ShareSheet({ url, title, onClose, onShared }) {
       await navigator.share({ title: title || 'Check out this reel on UChat!', url });
       onShared();
     } catch {}
+  };
+
+  const handleDownload = async () => {
+    if (!videoUrl) { toast.error('Video not available to download'); return; }
+    setDownloading(true);
+    try {
+      const quality = getDownloadQualityPref();
+      const downloadUrl = buildWatermarkedDownloadUrl(videoUrl, creatorUsername, quality);
+      triggerDownload(downloadUrl, `uchat-${creatorUsername || 'reel'}.mp4`);
+      toast.success('Download started');
+    } catch {
+      toast.error('Could not start download');
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const shareApps = [
@@ -199,6 +217,27 @@ function ShareSheet({ url, title, onClose, onShared }) {
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
+
+        {/* Download row — applies your quality preference + UChat watermark (Settings → Archiving and downloading) */}
+        {videoUrl && (
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
+            style={{
+              width: '100%', marginTop: 10, display: 'flex', alignItems: 'center', gap: 10,
+              padding: '12px 14px', background: 'var(--surface-2)', borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-default)', cursor: downloading ? 'default' : 'pointer'
+            }}
+          >
+            <Download size={16} color="var(--text-tertiary)" />
+            <span style={{ flex: 1, fontSize: 13, color: 'var(--text-secondary)', textAlign: 'left' }}>
+              {downloading ? 'Starting download\u2026' : 'Download reel'}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+              {getDownloadQualityPref() === 'lowest' ? 'Lower quality' : 'Same quality'}
+            </span>
+          </button>
+        )}
       </motion.div>
     </>
   );
@@ -242,6 +281,14 @@ export default function ReelsPage() {
 
   const updateReel = useCallback((id, patch) => {
     setReels(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
+  }, []);
+
+  const removeReel = useCallback((id) => {
+    setReels(prev => {
+      const next = prev.filter(r => r.id !== id);
+      setCurrent(c => Math.min(c, Math.max(0, next.length - 1)));
+      return next;
+    });
   }, []);
 
   const handleScroll = useCallback((direction) => {
@@ -301,6 +348,7 @@ export default function ReelsPage() {
           reel={reel}
           isActive={i === current}
           onUpdate={(patch) => updateReel(reel.id, patch)}
+          onDelete={() => removeReel(reel.id)}
           style={{
             position: 'absolute', inset: 0,
             transform: `translateY(${(i - current) * 100}%)`,
@@ -336,7 +384,7 @@ export default function ReelsPage() {
 }
 
 // ── Reel Item ─────────────────────────────────────────────────────────────────
-function ReelItem({ reel, isActive, onUpdate, style }) {
+function ReelItem({ reel, isActive, onUpdate, onDelete, style }) {
   const { uid } = useAuth();
   const [liked, setLiked] = useState(false);
   const [likesCount, setLikesCount] = useState(reel.likesCount || 0);
@@ -347,6 +395,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
   const [playing, setPlaying] = useState(false);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const [heartAnim, setHeartAnim] = useState(false);
   const [saved, setSaved] = useState(false);
   const [reposted, setReposted] = useState(false);
@@ -484,7 +533,7 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
         <>
           <video
             ref={videoRef}
-            src={reel.videoUrl}
+            src={applyDataSaverTransform(reel.videoUrl)}
             loop muted={muted} playsInline
             preload={isActive ? 'auto' : 'metadata'}
             style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer', pointerEvents: 'none' }}
@@ -610,6 +659,10 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
           icon={muted ? <VolumeX size={24} color="white" /> : <Volume2 size={24} color="white" />}
           onClick={() => setMuted(m => !m)}
         />
+        <ReelAction
+          icon={<MoreVertical size={24} color="white" />}
+          onClick={() => setShowMenu(true)}
+        />
       </div>
 
       <AnimatePresence>
@@ -617,6 +670,18 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
           <CommentSheet
             post={{ ...reel, commentsCount }}
             onClose={() => setShowComments(false)}
+            contentType="reel"
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Options menu (delete / report / copy link) */}
+      <AnimatePresence>
+        {showMenu && (
+          <ReelMenu
+            reel={reel}
+            onClose={() => setShowMenu(false)}
+            onDeleted={onDelete}
           />
         )}
       </AnimatePresence>
@@ -627,6 +692,8 @@ function ReelItem({ reel, isActive, onUpdate, style }) {
           <ShareSheet
             url={reelUrl}
             title={reel.title || reel.caption || 'Check this reel on UChat!'}
+            videoUrl={reel.videoUrl}
+            creatorUsername={reel.author?.username}
             onClose={() => setShowShare(false)}
             onShared={onShared}
           />

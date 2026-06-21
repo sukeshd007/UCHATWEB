@@ -8,7 +8,7 @@ import { addComment, getComments, getUserByUid, deleteComment } from '../../fire
 import Avatar from '../common/Avatar';
 import toast from 'react-hot-toast';
 
-export default function CommentSheet({ post, onClose }) {
+export default function CommentSheet({ post, onClose, contentType = 'post' }) {
   const { uid, userProfile, isAdmin } = useAuth();
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -43,7 +43,7 @@ export default function CommentSheet({ post, onClose }) {
     if (!text.trim() || !uid || submitting) return;
     setSubmitting(true);
     try {
-      await addComment(uid, post.id, text.trim(), post.authorId);
+      await addComment(uid, post.id, text.trim(), post.authorId, contentType);
       setText('');
       loadComments();
     } catch (e) {
@@ -55,7 +55,7 @@ export default function CommentSheet({ post, onClose }) {
 
   const handleDelete = async (commentId) => {
     try {
-      await deleteComment(commentId, post.id);
+      await deleteComment(commentId, post.id, contentType);
       setComments(cs => cs.filter(c => c.id !== commentId));
       toast.success('Comment deleted');
     } catch {

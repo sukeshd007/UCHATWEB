@@ -1,6 +1,6 @@
 // src/contexts/AuthContext.jsx
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus, handleGoogleRedirectResult } from '../firebase/authService';
+import { subscribeToAuthState, ensureUserDocument, updateOnlineStatus, handleGoogleRedirectResult, captureReferralCode } from '../firebase/authService';
 import { subscribeToUser } from '../firebase/firestoreService';
 import { initPushNotifications, onForegroundMessage, disablePush } from '../firebase/messagingService';
 import toast from 'react-hot-toast';
@@ -29,6 +29,11 @@ export const AuthProvider = ({ children }) => {
   const heartbeatRef = useRef(null);
 
   useEffect(() => {
+    // Capture ?ref=username before anything else, so it survives the
+    // Google-redirect round-trip (which reloads the page and would otherwise
+    // drop the query param).
+    captureReferralCode();
+
     // Handle Google redirect result on mobile (runs once on page load)
     handleGoogleRedirectResult().catch(err => {
       console.error('Google redirect error:', err?.message);

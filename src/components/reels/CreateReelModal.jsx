@@ -7,7 +7,7 @@ import { X, Video, Loader2, HardDrive, Cloud, Image, Scissors } from 'lucide-rea
 import { useAuth } from '../../contexts/AuthContext';
 import { OWNER_USERNAMES } from '../../contexts/AuthContext';
 import { createReel, createLocalReel } from '../../firebase/firestoreService';
-import { uploadReelVideo } from '../../firebase/storageService';
+import { uploadReelVideo, uploadReelThumbnail } from '../../firebase/storageService';
 import { saveLocalReelVideo } from '../../utils/localDB';
 import toast from 'react-hot-toast';
 
@@ -67,12 +67,34 @@ export default function CreateReelModal({ onClose }) {
       } else {
         // Standard upload to cloud storage
         const result = await uploadReelVideo(file, uid, (p) => setProgress(p));
+
+        // BUGFIX: previously only `thumbnailTime` was saved here, and nothing
+        // in the app ever actually read `thumbnailTime` either — every grid
+        // (HomeReels, ProfilePage, SavedReelsPage) renders `reel.thumbnailUrl`
+        // when present. If the user picked a custom cover image, the UI
+        // showed "✓ Custom thumbnail set" (so it looked saved) but the file
+        // was never uploaded or written anywhere — silently discarded on
+        // submit, so the grid always fell back to a raw <video> first frame.
+        let thumbnailUrl = null;
+        if (customThumbnail) {
+          try {
+            const thumbResult = await uploadReelThumbnail(customThumbnail, uid);
+            thumbnailUrl = thumbResult.url;
+          } catch (e) {
+            // Don't fail the whole reel upload over a cover image — the video
+            // itself already succeeded; the grid just falls back to <video>.
+            console.warn('Custom thumbnail upload failed, falling back to video frame:', e.message);
+            toast.error('Cover image failed to upload — used the video frame instead');
+          }
+        }
+
         await createReel(uid, {
           videoUrl: result.url,
           videoPath: result.path,
           title: title.trim(),
           caption: caption.trim(),
           thumbnailTime: thumbnailTime,
+          thumbnailUrl, // null unless a cover image was picked AND uploaded successfully
         });
         toast.success('Reel shared!');
       }

@@ -214,6 +214,12 @@ export const uploadReelVideo = (file, uid, onProgress) => {
   return uploadToR2(file, `reel-videos/${uid}`, onProgress);
 };
 
+export const uploadReelThumbnail = (file, uid, onProgress) => {
+  validateImage(file);
+  if (file.size > MAX_IMAGE_SIZE) throw new Error('Thumbnail image must be under 10MB');
+  return uploadToCloudinary(file, `uchat/reel-thumbnails/${uid}`, onProgress);
+};
+
 export const uploadChatMedia = (file, uid, onProgress) => {
   if (file.type.startsWith('video/')) {
     validateVideo(file);
